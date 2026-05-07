@@ -1,0 +1,246 @@
+const { app, BrowserWindow, ipcMain, globalShortcut, dialog } = require('electron');
+const path = require('path');
+const { autoUpdater } = require('electron-updater');
+const ipc = require('./ipc');
+const { getAppStateManager } = require('../main/state/AppStateManager');
+const { collectTelemetry } = require('../main/services/telemetry-service');
+const { verifyKillSwitch } = require('../main/utils/security');
+
+let mainWindow;
+let splashWindow;
+
+// ── Auto-updater: solo activo en producción ──────────────────────────────────
+function initializeAutoUpdater() {
+  if (!app.isPackaged) {
+    console.log('[UPDATER] Modo desarrollo — autoUpdater deshabilitado.');
+    return;
+  }
+
+  // Silencia el logger en consola en producción; usa el de Electron
+  autoUpdater.logger = require('electron').nativeTheme ? null : null;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => {
+    console.log('[UPDATER] Buscando actualizaciones...');
+  });
+
+  autoUpdater.on('update-available', (info) => {
+    console.log(`[UPDATER] Actualización disponible: v${info.version}`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('updater:update-available', {
+        version: info.version,
+        releaseDate: info.releaseDate,
+      });
+    }
+  });
+
+  autoUpdater.on('update-not-available', () => {
+    console.log('[UPDATER] La aplicación está al día.');
+  });
+
+  autoUpdater.on('download-progress', (progress) => {
+    console.log(`[UPDATER] Descarga: ${Math.round(progress.percent)}%`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('updater:download-progress', {
+        percent: Math.round(progress.percent),
+      });
+    }
+  });
+
+  autoUpdater.on('update-downloaded', (info) => {
+    console.log(`[UPDATER] v${info.version} descargada y lista para instalar.`);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('updater:update-downloaded', {
+        version: info.version,
+      });
+    }
+  });
+
+  autoUpdater.on('error', (err) => {
+    console.error('[UPDATER] Error:', err.message);
+  });
+
+  // Revisar actualizaciones al arrancar
+  autoUpdater.checkForUpdatesAndNotify();
+}
+
+// IPC: el frontend puede pedir la instalación manual
+ipcMain.on('updater:quit-and-install', () => {
+  autoUpdater.quitAndInstall(false, true);
+});
+
+function createSplashWindow() {
+  splashWindow = new BrowserWindow({
+    width: 400,
+    height: 400,
+    frame: false,
+    transparent: true,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    icon: path.join(__dirname, '../../assets/icon.png'),
+  });
+
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+
+  splashWindow.on('closed', () => {
+    splashWindow = null;
+  });
+}
+
+function createMainWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    show: false,
+    backgroundColor: '#0F172A',
+    icon: path.join(__dirname, '../../assets/icon.png'),
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+    },
+  });
+
+  mainWindow.setMenu(null);
+
+  if (!app.isPackaged) {
+    mainWindow.loadURL('http://localhost:3000');
+    mainWindow.webContents.openDevTools();
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../ui/build/index.html'));
+  }
+
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    if (input.control && input.shift && input.key.toLowerCase() === 'i') {
+      mainWindow.webContents.toggleDevTools();
+    }
+  });
+
+  // Signal "backend ready" to frontend once the window finishes loading
+  mainWindow.webContents.on('did-finish-load', async () => {
+    console.log('[BOOT] Backend: did-finish-load, emitiendo señal de backend ready');
+    try {
+      const { getConfigManager } = require('../services/config-manager');
+      const cm = getConfigManager();
+      if (cm) {
+        await cm.initialize();
+        const cfg = cm.getConfig();
+        console.log('[BOOT] Backend: Config cargada y lista');
+        if (cfg && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('config:updated', { success: true, config: cfg });
+        }
+      }
+    } catch (err) {
+      console.warn('[BOOT] Backend: configManager no disponible aún:', err.message);
+    }
+
+    // Emit full app state to renderer so React sees domain lists etc.
+    try {
+      const appState = getAppStateManager();
+      if (appState) {
+        appState.broadcastFullState();
+        console.log('[BOOT] Backend: Full state broadcast sent');
+      }
+    } catch (err) {
+      console.warn('[BOOT] Backend: Could not broadcast state:', err.message);
+    }
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    setTimeout(() => {
+      if (splashWindow && !splashWindow.isDestroyed()) {
+        splashWindow.close();
+      }
+      mainWindow.show();
+      if (app.isPackaged) {
+        mainWindow.focus();
+      }
+    }, 2500);
+  });
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  // Protección de cierre: si hay migración/DNS/SSL en curso, preguntar antes de salir
+  mainWindow.on('close', (e) => {
+    if (ipc.isTaskRunning()) {
+      e.preventDefault();
+      const choice = dialog.showMessageBoxSync(mainWindow, {
+        type: 'warning',
+        buttons: ['Sí, cancelar todo y salir', 'No, seguir trabajando'],
+        defaultId: 1,
+        cancelId: 1,
+        title: 'Confirmar Salida',
+        message: 'Hay una migración o sincronización en curso. Si cierras la aplicación ahora, el proceso se interrumpirá abruptamente.\n\n¿Estás seguro de que quieres salir?'
+      });
+      if (choice === 0) {
+        mainWindow.removeAllListeners('close');
+        mainWindow.close();
+      }
+    }
+  });
+}
+
+function initializeIpc() {
+  ipc.initializeIpcHandlers(ipcMain, mainWindow);
+  console.log('IPC channels initialized');
+}
+
+function initializeServices() {
+  console.log('Services will be initialized lazily via IPC');
+}
+
+app.whenReady().then(async () => {
+  // ── Dead Man's Switch: bloquea app completa si licencia no es válida ──
+  try {
+    await verifyKillSwitch();
+  } catch (error) {
+    dialog.showErrorBox("Error Crítico de Licencia", error.message);
+    app.quit();
+    return;
+  }
+
+  // ── Auto-updater: revisar actualizaciones (solo producción) ──
+  initializeAutoUpdater();
+
+  // [CCD] Capa 1 — Recolección de telemetría de entorno
+  try {
+    const telemetry = collectTelemetry();
+    console.log('[CCD] Telemetry payload:', JSON.stringify(telemetry));
+  } catch (err) {
+    console.warn('[CCD] Telemetry collection failed:', err.message);
+  }
+
+  // Inicializar AppStateManager (lazy-loads electron-store ESM) — NO bloqueante
+  // El store carga en background. Mientras tanto, todo opera en memoria.
+  getAppStateManager().init().catch(err => {
+    console.warn('[BOOT] AppState persist store no disponible, operando en memoria:', err.message);
+  });
+
+  createSplashWindow();
+  createMainWindow();
+  initializeIpc();
+  initializeServices();
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createMainWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
+});
+
+app.on('before-quit', () => {
+  console.log('Application shutting down...');
+});
+
+module.exports = { createWindow: createMainWindow, initializeIpc, initializeServices };

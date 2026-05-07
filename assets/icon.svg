@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="512" height="512">
+  <defs>
+    <linearGradient id="bg-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+    <linearGradient id="server-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#2563EB" />
+    </linearGradient>
+  </defs>
+
+  <rect width="256" height="256" rx="56" fill="url(#bg-grad)" stroke="#334155" stroke-width="4" />
+
+  <rect x="48" y="64" width="160" height="128" rx="12" fill="#020617" stroke="#475569" stroke-width="6" />
+
+  <rect x="64" y="80" width="128" height="24" rx="4" fill="#1E293B" />
+  <circle cx="84" cy="92" r="6" fill="#10B981" /> <line x1="108" y1="92" x2="176" y2="92" stroke="#475569" stroke-width="4" stroke-linecap="round" />
+
+  <rect x="64" y="116" width="128" height="24" rx="4" fill="url(#server-grad)" />
+  <circle cx="84" cy="128" r="6" fill="#FFFFFF" /> <line x1="108" y1="128" x2="176" y2="128" stroke="#DBEAFE" stroke-width="4" stroke-linecap="round" />
+
+  <rect x="64" y="152" width="128" height="24" rx="4" fill="#1E293B" />
+  <circle cx="84" cy="164" r="6" fill="#10B981" /> <line x1="108" y1="164" x2="140" y2="164" stroke="#475569" stroke-width="4" stroke-linecap="round" />
+</svg>

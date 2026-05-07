@@ -1,0 +1,32 @@
+{
+  "sshKeys": {
+    "privateKeyPath": "~/.ssh/id_rsa",
+    "publicKeyPath": "~/.ssh/id_rsa.pub"
+  },
+  "accounts": [
+    {
+      "name": "Clinmedia",
+      "originClouds": [
+        {
+          "name": "Hostinger",
+          "type": "hostinger",
+          "isLinked": false,
+          "sshCredentials": {
+            "host": "hostinger.example.com",
+            "port": 22,
+            "username": "u1234567",
+            "privateKey": ""
+          },
+
+
+          "pleskCliPath": "/usr/local/psa/bin"
+        }
+      ]
+    }
+  ],
+  "cloudflare": {
+    "apiToken": "",
+    "zoneId": "optional_default_zone"
+  },
+  "workspaceRoot": "Workspace-Raiz"
+}

@@ -1,0 +1,143 @@
+{
+  "name": "clinmedia-ops",
+  "version": "1.20.16",
+  "description": "Clinmedia Ops Control Center - Desktop application for managing WordPress migrations",
+  "main": "src/electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "concurrently \"npm run dev:react\" \"wait-on http://localhost:3000 && npm run dev:electron\"",
+    "dev:react": "cd src/ui && npm start",
+    "dev:electron": "cross-env NODE_ENV=development electron .",
+    "build": "npm run build:react && electron-builder",
+    "build:react": "cd src/ui && npm run build",
+    "obfuscate": "node scripts/obfuscate-main.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:e2e": "echo \"E2E tests not configured\" && exit 0",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dist": "npm run build:react && npm run obfuscate && electron-builder --win",
+    "dist:fast": "electron-builder --dir"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "wordpress",
+    "plesk",
+    "hostinger",
+    "cloudflare",
+    "migration"
+  ],
+  "author": "Clinmedia",
+  "license": "MIT",
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.4.2",
+    "@testing-library/react": "^14.2.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/jest": "^29.5.12",
+    "@types/node": "^20.11.24",
+    "@types/react": "^18.2.61",
+    "@types/react-dom": "^18.2.19",
+    "concurrently": "^8.2.2",
+    "cross-env": "^10.1.0",
+    "electron": "^28.3.3",
+    "electron-builder": "^24.9.1",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.33.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "javascript-obfuscator": "^5.4.2",
+    "jest": "^29.7.0",
+    "prettier": "^3.2.5",
+    "ts-jest": "^29.1.2",
+    "typescript": "^5.3.3",
+    "wait-on": "^7.2.0"
+  },
+  "dependencies": {
+    "@types/ssh2": "^1.15.0",
+    "axios": "^1.6.7",
+    "electron-store": "^11.0.2",
+    "electron-updater": "^6.8.3",
+    "keytar": "^7.9.0",
+    "node-machine-id": "^1.1.12",
+    "node-ssh": "^13.2.0",
+    "punycode": "^2.3.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "ssh2": "^1.15.0",
+    "tar": "^7.5.13",
+    "uuid": "^9.0.1"
+  },
+  "build": {
+    "appId": "com.clinmedia.ops",
+    "productName": "Clinmedia Ops Control Center",
+    "directories": {
+      "output": "release"
+    },
+    "npmRebuild": false,
+    "files": [
+      {
+        "from": ".build-obfuscated",
+        "to": ".",
+        "filter": [
+          "**/*"
+        ]
+      },
+      "src/ui/build/**/*",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "config/",
+        "to": "config/",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "assets/",
+        "to": "assets/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "Angel-Lizarzado",
+      "repo": "ClinmediaOps",
+      "releaseType": "release"
+    },
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerFilename": "ClinmediaOps-Setup-${version}.exe",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Clinmedia Ops"
+    },
+    "mac": {
+      "icon": "assets/icon.png",
+      "target": "dmg"
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "target": "AppImage"
+    }
+  }
+}

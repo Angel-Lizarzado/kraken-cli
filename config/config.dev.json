@@ -1,0 +1,47 @@
+{
+  "sshKeys": {
+    "privateKeyPath": "~/.ssh/id_rsa",
+    "publicKeyPath": "~/.ssh/id_rsa.pub"
+  },
+  "accounts": [
+    {
+      "name": "DEV-Clinmedia",
+      "originClouds": [
+        {
+          "name": "DEV-Hostinger",
+          "type": "hostinger",
+          "isLinked": false,
+          "sshCredentials": {
+            "host": "dev.hostinger.local",
+            "port": 22,
+            "username": "dev-user",
+            "privateKey": ""
+          },
+          "backupPaths": {
+            "files": "/home/dev-user/backups/{domain}.tar.gz",
+            "database": "/home/dev-user/backups/{domain}.sql"
+          }
+        }
+      ],
+      "destinationServers": [
+        {
+          "name": "DEV-Plesk",
+          "type": "plesk",
+          "isLinked": false,
+          "sshCredentials": {
+            "host": "dev.plesk.local",
+            "port": 22,
+            "username": "dev-root",
+            "privateKey": ""
+          },
+          "pleskCliPath": "/usr/local/psa/bin"
+        }
+      ]
+    }
+  ],
+  "cloudflare": {
+    "apiToken": "",
+    "zoneId": "dev-zone"
+  },
+  "workspaceRoot": "Workspace-Raiz-DEV"
+}
