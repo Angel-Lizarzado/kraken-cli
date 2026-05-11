@@ -25,6 +25,9 @@ export interface ElectronApi {
   }) => Promise<unknown>;
   onEvent: (channel: string, cb: (...args: unknown[]) => void) => () => void;
   invoke: (channel: string, data?: unknown) => Promise<unknown>;
+  getAppVersion: () => Promise<string>;
+  notifyFrontendReady: () => void;
+  checkForUpdates: () => void;
 }
 
 declare global {

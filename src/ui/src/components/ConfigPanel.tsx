@@ -29,6 +29,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
   const [cfTokenDisplay, setCfTokenDisplay] = useState('');
   const [cfTokenInput, setCfTokenInput] = useState('');
   const [savingCfToken, setSavingCfToken] = useState(false);
+  const [ghTokenDisplay, setGhTokenDisplay] = useState('');
+  const [ghTokenInput, setGhTokenInput] = useState('');
+  const [savingGhToken, setSavingGhToken] = useState(false);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [workspacePath, setWorkspacePath] = useState<string>('');
   const [respaldosPath, setRespaldosPath] = useState<string>('');
@@ -71,6 +74,17 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
         setCfTokenDisplay(result.obfuscated || '');
         setCfTokenInput(result.token || '');
       }
+      // Cargar GitHub token
+      try {
+        const api = (window as any).api;
+        if (api) {
+          const ghResult = await api.invoke('config:get-github-token');
+          if (ghResult?.success) {
+            setGhTokenDisplay(ghResult.obfuscated || '');
+            setGhTokenInput(ghResult.token || '');
+          }
+        }
+      } catch { /* silencioso */ }
       // Cargar workspace path actual
       try {
         const wpResult = await api.invoke('workspace:get-path');
@@ -110,6 +124,34 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
       setSavingCfToken(false);
     }
   }, [cfTokenInput, setCloudflareToken, getCloudflareToken, onLog]);
+
+  const handleSaveGhToken = useCallback(async () => {
+    const api = (window as any).api;
+    const trimmed = ghTokenInput.trim();
+    if (!trimmed) {
+      onLog('No se puede guardar un token GitHub vacío.', 'warning', 'config');
+      return;
+    }
+    setSavingGhToken(true);
+    try {
+      const result = await api?.invoke('config:set-github-token', { token: trimmed });
+      if (result?.success) {
+        const fresh = await api?.invoke('config:get-github-token');
+        if (fresh?.success) setGhTokenDisplay(fresh.obfuscated || '');
+        toast.success('GitHub API Token guardado.');
+        onLog('[CONFIG] GitHub API Token actualizado y guardado.', 'success', 'config');
+      } else {
+        const errMsg = result?.error || 'Error desconocido';
+        onLog(`Error al guardar GitHub token: ${errMsg}`, 'error', 'config');
+        toast.error(errMsg);
+      }
+    } catch (err: any) {
+      onLog(`Error al guardar GitHub token: ${err?.message}`, 'error', 'config');
+      toast.error(err?.message || 'Error inesperado');
+    } finally {
+      setSavingGhToken(false);
+    }
+  }, [ghTokenInput, onLog, toast]);
 
   // 🔥 HOTFIX v1.6.0: Generate ED25519 SSH key
   const handleGenerateKey = useCallback(async () => {
@@ -413,7 +455,9 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
 
       <section>
         <h2 className="font-display text-base font-bold mb-4">Integraciones Externas</h2>
-        <div className="card p-5">
+        <div className="card p-5 space-y-5">
+
+          {/* ── Cloudflare API Token ── */}
           <div className="flex flex-col md:flex-row md:items-end gap-4">
             <div className="flex-1">
               <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
@@ -443,15 +487,60 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
               className="btn btn--primary text-xs flex-shrink-0"
             >
               {savingCfToken ? (
-                <span className="flex items-center gap-2">
-                  <span className="spinner" />
-                  Guardando...
-                </span>
+                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
               ) : (
                 'Guardar'
               )}
             </button>
           </div>
+
+          {/* ── Separador ── */}
+          <div style={{ borderTop: '1px solid var(--border-default)' }} />
+
+          {/* ── GitHub API Token ── */}
+          <div className="flex flex-col md:flex-row md:items-end gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                GitHub API Token
+                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                  (requerido por ScalifyLabs)
+                </span>
+              </label>
+              <input
+                id="config-github-token"
+                type="password"
+                value={ghTokenInput}
+                onChange={e => setGhTokenInput(e.target.value)}
+                placeholder={
+                  ghTokenDisplay
+                    ? `Token guardado: ${ghTokenDisplay}`
+                    : 'ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+                }
+                className="input font-mono text-xs"
+                style={{ width: '100%' }}
+              />
+              {ghTokenDisplay && (
+                <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                  Token actual: {ghTokenDisplay}
+                </p>
+              )}
+              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                Necesita scope <code className="font-mono px-1 rounded" style={{ backgroundColor: 'oklch(0 0 0 / 0.3)' }}>write:public_key</code> para registrar deploy keys en GitHub.
+              </p>
+            </div>
+            <button
+              onClick={handleSaveGhToken}
+              disabled={savingGhToken || !ghTokenInput.trim()}
+              className="btn btn--primary text-xs flex-shrink-0"
+            >
+              {savingGhToken ? (
+                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
+              ) : (
+                'Guardar'
+              )}
+            </button>
+          </div>
+
         </div>
       </section>
     </div>

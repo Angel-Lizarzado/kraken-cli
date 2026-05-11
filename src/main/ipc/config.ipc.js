@@ -198,6 +198,43 @@ function registerConfigHandlers(ipcMain, mainWindow) {
       return { success: false, error: error.message };
     }
   });
+  // Eliminar servidor destino
+  ipcMain.handle('server:delete', async (event, { serverName }) => {
+    try {
+      if (!serverName || typeof serverName !== 'string' || !serverName.trim()) {
+        return { success: false, error: 'Nombre de servidor inválido' };
+      }
+
+      const configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+
+      const antes = (cfg.destinationServers || []).length;
+      cfg.destinationServers = (cfg.destinationServers || []).filter(
+        s => s.name !== serverName.trim()
+      );
+      const despues = cfg.destinationServers.length;
+
+      if (antes === despues) {
+        return { success: false, error: `Servidor "${serverName}" no encontrado en la configuración` };
+      }
+
+      await configManager.saveConfig();
+      console.log(`[CONFIG] Servidor "${serverName}" eliminado correctamente.`);
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('config:updated', {
+          success: true,
+          config: configManager.getConfig(),
+        });
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('[CONFIG] Error al eliminar servidor:', error);
+      return { success: false, error: error.message };
+    }
+  });
 }
 
 module.exports = { registerConfigHandlers };

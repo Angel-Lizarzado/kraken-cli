@@ -63,10 +63,10 @@ class WorkspaceManager {
 
   async createDomainFolder(accountName, cloudName, domain) {
     await this.initializeIfNeeded();
-    
+
     const domainPath = this.getDomainPath(accountName, cloudName, domain);
     await this.ensureDirectoryExists(domainPath);
-    
+
     return domainPath;
   }
 
@@ -83,7 +83,7 @@ class WorkspaceManager {
    * @returns {string} — path absoluto resuelto y validado
    */
   _safePath(...segments) {
-    const relPath = path.join('respaldos', ...segments);
+    const relPath = path.join(...segments);
     return this.configManager.assertPathInsideWorkspace(relPath);
   }
 
@@ -97,12 +97,12 @@ class WorkspaceManager {
 
   async updateDominiosProcesados(accountName, cloudName, domains) {
     await this.initializeIfNeeded();
-    
+
     const cloudPath = this.getCloudPath(accountName, cloudName);
     await this.ensureDirectoryExists(cloudPath);
-    
+
     const jsonPath = path.join(cloudPath, 'dominios_procesados.json');
-    
+
     // 🔥 HOTFIX v1.5.6: normalizar TODOS los items a objetos { dominio, ... }
     // antes de mergear. Esto evita corrupción del JSON por tipos mezclados.
     const normalize = (item) => {
@@ -110,7 +110,7 @@ class WorkspaceManager {
       if (item && typeof item === 'object' && item.dominio) return item;
       return null;
     };
-    
+
     let existingDomains = [];
     try {
       const data = await fsPromises.readFile(jsonPath, 'utf8');
@@ -121,10 +121,10 @@ class WorkspaceManager {
     } catch (error) {
       console.warn(`[WORKSPACE] Error al leer dominios_procesados.json existente, empezando fresco: ${error.message}`);
     }
-    
+
     // Normalizar domains entrantes
     const normalizedDomains = domains.map(normalize).filter(Boolean);
-    
+
     // Merge usando Map con dominio como clave única (permite actualizar metadatos)
     const domainMap = new Map();
     for (const d of [...existingDomains, ...normalizedDomains]) {
@@ -136,9 +136,9 @@ class WorkspaceManager {
         domainMap.set(key, { ...domainMap.get(key), ...d });
       }
     }
-    
+
     const mergedDomains = Array.from(domainMap.values());
-    
+
     // 🔥 v1.8.2: escritura atómica para evitar corrupción por crash
     await this._atomicWriteJson(jsonPath, mergedDomains);
 
@@ -326,15 +326,15 @@ class WorkspaceManager {
 
   async scanDomainsFromFolders(accountName, cloudName) {
     await this.initializeIfNeeded();
-    
+
     const cloudPath = this.getCloudPath(accountName, cloudName);
-    
+
     try {
       const items = await fsPromises.readdir(cloudPath, { withFileTypes: true });
       const domains = items
         .filter(item => item.isDirectory())
         .map(item => item.name);
-      
+
       return domains;
     } catch (error) {
       // Cloud path doesn't exist
@@ -344,26 +344,26 @@ class WorkspaceManager {
 
   async createTempWorkspace(taskId) {
     await this.initializeIfNeeded();
-    
+
     const tempPath = this.configManager.assertPathInsideWorkspace(
       path.join('temp', taskId)
     );
     await this.ensureDirectoryExists(tempPath);
-    
+
     // Create logs subdirectory
     const logsPath = path.join(tempPath, 'logs');
     await this.ensureDirectoryExists(logsPath);
-    
+
     return tempPath;
   }
 
   async cleanupTempWorkspace(taskId) {
     await this.initializeIfNeeded();
-    
+
     const tempPath = this.configManager.assertPathInsideWorkspace(
       path.join('temp', taskId)
     );
-    
+
     try {
       await fsPromises.rm(tempPath, { recursive: true, force: true });
       console.log(`Cleaned up temp workspace: ${tempPath}`);
@@ -374,13 +374,13 @@ class WorkspaceManager {
 
   async getWorkspaceStats() {
     await this.initializeIfNeeded();
-    
+
     const respaldosPath = this.configManager.getRespaldosPath();
     const wsRoot = this.configManager.getWorkspacePath();
-    
+
     try {
       const accounts = await this.scanDirectoryStructure(respaldosPath);
-      
+
       return {
         workspaceRoot: wsRoot,
         accounts: accounts,
@@ -400,12 +400,12 @@ class WorkspaceManager {
     try {
       const items = await fsPromises.readdir(dirPath, { withFileTypes: true });
       const structure = [];
-      
+
       for (const item of items) {
         if (item.isDirectory()) {
           const subPath = path.join(dirPath, item.name);
           const subItems = await fsPromises.readdir(subPath, { withFileTypes: true });
-          
+
           const clouds = subItems
             .filter(subItem => subItem.isDirectory())
             .map(subItem => ({
@@ -413,7 +413,7 @@ class WorkspaceManager {
               path: path.join(subPath, subItem.name),
               domains: [] // Would need recursive scan for domains
             }));
-          
+
           structure.push({
             name: item.name,
             path: subPath,
@@ -421,7 +421,7 @@ class WorkspaceManager {
           });
         }
       }
-      
+
       return structure;
     } catch (error) {
       return [];
@@ -430,14 +430,14 @@ class WorkspaceManager {
 
   async calculateDirectorySize(dirPath) {
     let totalSize = 0;
-    
+
     const calculate = async (currentPath) => {
       try {
         const items = await fsPromises.readdir(currentPath, { withFileTypes: true });
-        
+
         for (const item of items) {
           const itemPath = path.join(currentPath, item.name);
-          
+
           if (item.isDirectory()) {
             await calculate(itemPath);
           } else if (item.isFile()) {
@@ -453,7 +453,7 @@ class WorkspaceManager {
         // Skip directories we can't read
       }
     };
-    
+
     await calculate(dirPath);
     return totalSize;
   }
@@ -470,38 +470,130 @@ class WorkspaceManager {
 
   async scanWorkspace() {
     await this.initializeIfNeeded();
-    const respaldoPath = this.configManager.getRespaldosPath();
+
     const wsRoot = this.configManager.getWorkspacePath();
+    const respaldoPathCalculado = this.configManager.getRespaldosPath();
+
+    // ── Resolución robusta de la ruta de escaneo ──────────────────────────────
+    // Problema: si el usuario configuró workspaceRoot apuntando DIRECTAMENTE a
+    // la carpeta "respaldos", entonces getRespaldosPath() devuelve
+    // "respaldos/respaldos" que no existe.
+    // Solución: probar ambas rutas y usar la que exista en disco.
+    let respaldoPath = respaldoPathCalculado;
+    const existeCalculada = await fsPromises.access(respaldoPathCalculado).then(() => true).catch(() => false);
+    const existeRaiz = await fsPromises.access(wsRoot).then(() => true).catch(() => false);
+
+    if (!existeCalculada && existeRaiz) {
+      console.warn(`[WORKSPACE] ⚠️  getRespaldosPath() (${respaldoPathCalculado}) no existe en disco.`);
+      console.warn(`[WORKSPACE] ⚠️  Usando workspaceRoot directamente: ${wsRoot}`);
+      console.warn(`[WORKSPACE] ⚠️  Causa probable: workspaceRoot ya apunta a la carpeta "respaldos".`);
+      console.warn(`[WORKSPACE] ⚠️  Corrección permanente: cambia workspaceRoot al PADRE de "respaldos".`);
+      respaldoPath = wsRoot;
+    } else if (!existeCalculada && !existeRaiz) {
+      console.error(`[WORKSPACE] ❌ Ninguna ruta existe en disco:`);
+      console.error(`[WORKSPACE]    - Calculada: ${respaldoPathCalculado}`);
+      console.error(`[WORKSPACE]    - WorkspaceRoot: ${wsRoot}`);
+      return { workspaceRoot: wsRoot, accounts: [] };
+    }
+
+    console.log(`[WORKSPACE] Iniciando escaneo en: ${respaldoPath}`);
     const discovered = [];
 
     try {
-      const accountDirs = await fsPromises.readdir(respaldoPath, { withFileTypes: true });
-      for (const accountDir of accountDirs) {
-        if (!accountDir.isDirectory()) continue;
-        const accountPath = path.join(respaldoPath, accountDir.name);
-        const cloudDirs = await fsPromises.readdir(accountPath, { withFileTypes: true });
-        const clouds = [];
+      // ── Nivel 1: Cuentas (hostinger1, hostinger2...) ──────────────────────
+      const entradas = await fsPromises.readdir(respaldoPath, { withFileTypes: true });
+      console.log(`[WORKSPACE] Nivel 1 — entradas en ${respaldoPath}: ${entradas.length} items`);
 
-        for (const cloudDir of cloudDirs) {
-          if (!cloudDir.isDirectory()) continue;
-          const cloudPath = path.join(accountPath, cloudDir.name);
-          const items = await fsPromises.readdir(cloudPath, { withFileTypes: true });
-          const domains = items
-            .filter(i => i.isDirectory())
-            .map(i => i.name);
-
-          clouds.push({ name: cloudDir.name, domains });
+      for (const accountDir of entradas) {
+        // withFileTypes puede devolver false para junction points de Windows.
+        // Usamos stat() como fallback para detectar directorios reales.
+        let esDirectorio = accountDir.isDirectory();
+        if (!esDirectorio) {
+          try {
+            const stat = await fsPromises.stat(path.join(respaldoPath, accountDir.name));
+            esDirectorio = stat.isDirectory();
+            if (esDirectorio) {
+              console.log(`[WORKSPACE]   [symlink/junction] ${accountDir.name} detectado como directorio vía stat()`);
+            }
+          } catch { /* sin acceso — ignorar */ }
+        }
+        if (!esDirectorio) {
+          console.log(`[WORKSPACE]   [saltado] ${accountDir.name} — no es directorio`);
+          continue;
         }
 
-        discovered.push({ name: accountDir.name, clouds });
+        const accountPath = path.join(respaldoPath, accountDir.name);
+        console.log(`[WORKSPACE]   [cuenta] ${accountDir.name} → ${accountPath}`);
+        const clouds = [];
+
+        // ── Nivel 2: Clouds (cloud1, cloud2...) ────────────────────────────
+        let cloudEntradas = [];
+        try {
+          cloudEntradas = await fsPromises.readdir(accountPath, { withFileTypes: true });
+        } catch (err) {
+          console.error(`[WORKSPACE]   ❌ No se pudo leer la cuenta "${accountDir.name}": ${err.message}`);
+          continue;
+        }
+        console.log(`[WORKSPACE]   Nivel 2 — ${accountDir.name}: ${cloudEntradas.length} items`);
+
+        for (const cloudDir of cloudEntradas) {
+          let esCloud = cloudDir.isDirectory();
+          if (!esCloud) {
+            try {
+              const stat = await fsPromises.stat(path.join(accountPath, cloudDir.name));
+              esCloud = stat.isDirectory();
+            } catch { /* sin acceso — ignorar */ }
+          }
+          if (!esCloud) continue;
+
+          const cloudPath = path.join(accountPath, cloudDir.name);
+
+          // ── Nivel 3: Dominios (dominio.es...) ──────────────────────────
+          let domainEntradas = [];
+          try {
+            domainEntradas = await fsPromises.readdir(cloudPath, { withFileTypes: true });
+          } catch (err) {
+            console.error(`[WORKSPACE]     ❌ No se pudo leer el cloud "${cloudDir.name}": ${err.message}`);
+            continue;
+          }
+
+          const domains = [];
+          for (const item of domainEntradas) {
+            let esDominio = item.isDirectory();
+            if (!esDominio) {
+              try {
+                const stat = await fsPromises.stat(path.join(cloudPath, item.name));
+                esDominio = stat.isDirectory();
+              } catch { /* sin acceso — ignorar */ }
+            }
+            if (esDominio) domains.push(item.name);
+          }
+
+          console.log(`[WORKSPACE]     [cloud] ${cloudDir.name} → ${domains.length} dominios: [${domains.join(', ')}]`);
+
+          if (domains.length > 0) {
+            clouds.push({ name: cloudDir.name, domains });
+          }
+        }
+
+        if (clouds.length > 0) {
+          discovered.push({ name: accountDir.name, clouds });
+        } else {
+          console.log(`[WORKSPACE]   ⚠️  Cuenta "${accountDir.name}" omitida — sin clouds con dominios`);
+        }
       }
-    } catch {
-      // respaldos path does not exist — return empty
+
+      console.log(`[WORKSPACE] ✅ Escaneo finalizado. Cuentas encontradas: ${discovered.length}`);
+
+    } catch (error) {
+      console.error('[WORKSPACE] ❌ Error crítico en el escaneo:', error.code, error.message);
+      console.error('[WORKSPACE]    Ruta intentada:', respaldoPath);
     }
 
     return { workspaceRoot: wsRoot, accounts: discovered };
   }
 }
+
 
 // Singleton instance
 let instance = null;

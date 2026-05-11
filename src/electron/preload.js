@@ -7,13 +7,15 @@ const SEND_CHANNELS = [
   'config:save',
   'config:load',
   'server:maintenance',
-  'workspace:scan',
   'progress:subscribe',
   'progress:unsubscribe',
   'cloudflare:sync-domains',
   'plesk:install-ssl',
   // ── Auto-updater commands (renderer → main) ──
   'updater:quit-and-install',
+  'updater:check-manually',
+  // ── App lifecycle ──
+  'app:frontend-ready',
 ];
 
 const RECEIVE_CHANNELS = [
@@ -44,11 +46,17 @@ const RECEIVE_CHANNELS = [
   'ssl:sync-error',
   'log:batch',
   'scanner:clean-progress',
+  'health:progress',
   'domain-process-result',
   // ── Auto-updater events (main → renderer) ──
+  'updater:checking',
   'updater:update-available',
   'updater:download-progress',
   'updater:update-downloaded',
+  'updater:not-available',
+  'updater:error',
+  // ── ScalifyLabs: progreso en tiempo real (main → renderer) ──
+  'scalify:progreso',
 ];
 
 const INVOKE_CHANNELS = [
@@ -97,7 +105,19 @@ const INVOKE_CHANNELS = [
   'scanner:init-pending',
   'scanner:finish',
   'purge-plesk-backups',
-  'get-detailed-storage'
+  'get-detailed-storage',
+  'dialog:open-directory',
+  'dialog:open-file',
+  'workspace:set-path',
+  'workspace:get-path',
+  'server:delete',
+  'app:get-version',
+  'health:check-mass',
+  'health:cancel',
+  // ── ScalifyLabs ──
+  'scalify:deploy',
+  'config:get-github-token',
+  'config:set-github-token',
 ];
 
 // ── Helper: typed invoke with whitelist validation ──
@@ -117,7 +137,7 @@ function safeReceive(channel, cb) {
     return () => ipcRenderer.removeListener(channel, handler);
   }
   console.warn(`Attempted to receive on invalid channel: ${channel}`);
-  return () => {};
+  return () => { };
 }
 
 // ── Expose legacy window.api (backward compatible) ──
@@ -130,7 +150,7 @@ contextBridge.exposeInMainWorld('api', {
       console.warn(`Attempted to send on invalid channel: ${channel}`);
     }
   },
-  
+
   // Receive methods (main → renderer)
   receive: (channel, func) => {
     if (RECEIVE_CHANNELS.includes(channel)) {
@@ -140,7 +160,7 @@ contextBridge.exposeInMainWorld('api', {
       console.warn(`Attempted to receive on invalid channel: ${channel}`);
     }
   },
-  
+
   // Remove listener
   removeListener: (channel, func) => {
     if (RECEIVE_CHANNELS.includes(channel)) {
@@ -149,7 +169,7 @@ contextBridge.exposeInMainWorld('api', {
       console.warn(`Attempted to remove listener from invalid channel: ${channel}`);
     }
   },
-  
+
   // Remove all listeners for a channel
   removeAllListeners: (channel) => {
     if (RECEIVE_CHANNELS.includes(channel)) {
@@ -158,7 +178,7 @@ contextBridge.exposeInMainWorld('api', {
       console.warn(`Attempted to remove all listeners from invalid channel: ${channel}`);
     }
   },
-  
+
   // Invoke methods (renderer → main → renderer with response)
   invoke: (channel, data) => {
     return safeInvoke(channel, data);
@@ -200,6 +220,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // ── Generic (for backward compat and untyped use) ──
+  /** Get current app version. */
+  getAppVersion: () => {
+    return safeInvoke('app:get-version');
+  },
+
+  /** Signal main process that frontend listeners are ready. */
+  notifyFrontendReady: () => {
+    if (SEND_CHANNELS.includes('app:frontend-ready')) {
+      ipcRenderer.send('app:frontend-ready');
+    }
+  },
+
+  /** Trigger manual update check. */
+  checkForUpdates: () => {
+    if (SEND_CHANNELS.includes('updater:check-manually')) {
+      ipcRenderer.send('updater:check-manually');
+    }
+  },
+
   /** Subscribe to any whitelisted receive channel. Returns cleanup function. */
   onEvent: (channel, cb) => {
     return safeReceive(channel, cb);

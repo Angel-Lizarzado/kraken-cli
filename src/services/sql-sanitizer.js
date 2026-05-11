@@ -32,20 +32,16 @@ const RE_SET_GLOBAL = /^SET\s+(@@GLOBAL\.|GLOBAL\s)/i;
 
 // ── Patrones de reemplazo (línea conservada, DEFINER eliminado) ───────────────
 
-/**
- * DEFINER=`user`@`host` o DEFINER='user'@'host' en cualquier posición.
- * Cubre:
- *   CREATE DEFINER=`x`@`y` TRIGGER ...
- *   /*!50013 DEFINER=`x`@`y` */
- *   ALTER DEFINER=`x`@`y` VIEW ...
- */
+// DEFINER=`user`@`host` o DEFINER='user'@'host' en cualquier posición.
+// Cubre:
+//   CREATE DEFINER=`x`@`y` TRIGGER ...
+//   /*!50013 DEFINER=`x`@`y` */
+//   ALTER DEFINER=`x`@`y` VIEW ...
 const RE_DEFINER = /\s*DEFINER\s*=\s*[`'"]?\w+[`'"]?\s*@\s*[`'"]?[\w%]+[`'"]?/gi;
 
-/**
- * /*!50013 DEFINER=`user`@`host` * / — comentario inline de mysqldump.
- * El objetivo es eliminar el comentario completo, no sólo el DEFINER.
- * Ej: "/*!50013 DEFINER=`u123`@`%` */"  →  ""
- */
+// /*!50013 DEFINER=`user`@`host` */ — comentario inline de mysqldump.
+// El objetivo es eliminar el comentario completo, no sólo el DEFINER.
+// Ej: "/*!50013 DEFINER=`u123`@`%` */"  →  ""
 const RE_DEFINER_COMMENT = /\/\*!5001[023]\s+DEFINER\s*=\s*[`'"]?\w+[`'"]?\s*@\s*[`'"]?[\w%]+[`'"]?\s*\*\//gi;
 
 /**

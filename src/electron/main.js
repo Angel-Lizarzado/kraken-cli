@@ -1,4 +1,7 @@
 const { app, BrowserWindow, ipcMain, globalShortcut, dialog } = require('electron');
+
+// ── IPC: versión de la app ────────────────────────────────────────────────────
+ipcMain.handle('app:get-version', () => app.getVersion());
 const path = require('path');
 const { autoUpdater } = require('electron-updater');
 const ipc = require('./ipc');
@@ -10,60 +13,105 @@ let mainWindow;
 let splashWindow;
 
 // ── Auto-updater: solo activo en producción ──────────────────────────────────
+let updaterInitialized = false;
+let isDownloading = false;
+const UPDATE_POLL_MS = 60 * 60 * 1000; // 60 minutos
+let pollInterval = null;
+
 function initializeAutoUpdater() {
   if (!app.isPackaged) {
     console.log('[UPDATER] Modo desarrollo — autoUpdater deshabilitado.');
     return;
   }
 
-  // Silencia el logger en consola en producción; usa el de Electron
-  autoUpdater.logger = require('electron').nativeTheme ? null : null;
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on('checking-for-update', () => {
     console.log('[UPDATER] Buscando actualizaciones...');
+    sendToRenderer('updater:checking', {});
   });
 
   autoUpdater.on('update-available', (info) => {
     console.log(`[UPDATER] Actualización disponible: v${info.version}`);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('updater:update-available', {
-        version: info.version,
-        releaseDate: info.releaseDate,
-      });
-    }
+    isDownloading = true;
+    sendToRenderer('updater:update-available', {
+      version: info.version,
+      releaseDate: info.releaseDate,
+    });
   });
 
-  autoUpdater.on('update-not-available', () => {
+  autoUpdater.on('update-not-available', (info) => {
     console.log('[UPDATER] La aplicación está al día.');
+    sendToRenderer('updater:not-available', { version: info.version });
   });
 
   autoUpdater.on('download-progress', (progress) => {
     console.log(`[UPDATER] Descarga: ${Math.round(progress.percent)}%`);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('updater:download-progress', {
-        percent: Math.round(progress.percent),
-      });
-    }
+    sendToRenderer('updater:download-progress', {
+      percent: Math.round(progress.percent),
+    });
   });
 
   autoUpdater.on('update-downloaded', (info) => {
     console.log(`[UPDATER] v${info.version} descargada y lista para instalar.`);
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('updater:update-downloaded', {
-        version: info.version,
-      });
-    }
+    isDownloading = false;
+    sendToRenderer('updater:update-downloaded', {
+      version: info.version,
+    });
   });
 
   autoUpdater.on('error', (err) => {
     console.error('[UPDATER] Error:', err.message);
+    isDownloading = false;
+    sendToRenderer('updater:error', { message: err.message });
   });
 
-  // Revisar actualizaciones al arrancar
-  autoUpdater.checkForUpdatesAndNotify();
+  updaterInitialized = true;
+  console.log('[UPDATER] Listeners registrados. Esperando señal del frontend para chequear...');
 }
+
+// Helper: envía al renderer solo si la ventana existe y terminó de cargar
+function sendToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  } else {
+    console.warn(`[UPDATER] mainWindow no disponible al enviar ${channel}`);
+  }
+}
+
+// Helper: ejecuta el chequeo solo si no hay descarga en curso
+function safeCheckForUpdates() {
+  if (!updaterInitialized) return;
+  if (isDownloading) {
+    console.log('[UPDATER] Chequeo omitido — descarga en curso.');
+    return;
+  }
+  autoUpdater.checkForUpdatesAndNotify().catch((err) => {
+    console.error('[UPDATER] Error al chequear:', err.message);
+  });
+}
+
+// El frontend dispara este evento cuando sus listeners IPC están activos.
+ipcMain.on('app:frontend-ready', () => {
+  console.log('[UPDATER] Frontend confirmó que está listo.');
+  safeCheckForUpdates();
+
+  // Polling cada 60 min (solo arranca una vez)
+  if (!pollInterval && updaterInitialized) {
+    pollInterval = setInterval(() => {
+      console.log('[UPDATER] Chequeo periódico (60 min)...');
+      safeCheckForUpdates();
+    }, UPDATE_POLL_MS);
+    console.log(`[UPDATER] Polling activo cada ${UPDATE_POLL_MS / 60000} minutos.`);
+  }
+});
+
+// IPC: el usuario pide chequeo manual desde la UI
+ipcMain.on('updater:check-manually', () => {
+  console.log('[UPDATER] Chequeo manual solicitado por el usuario.');
+  safeCheckForUpdates();
+});
 
 // IPC: el frontend puede pedir la instalación manual
 ipcMain.on('updater:quit-and-install', () => {
@@ -204,7 +252,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // ── Auto-updater: revisar actualizaciones (solo producción) ──
+  // ── Auto-updater: registrar listeners (el check se dispara cuando el frontend confirme ready) ──
   initializeAutoUpdater();
 
   // [CCD] Capa 1 — Recolección de telemetría de entorno

@@ -1,6 +1,6 @@
 {
   "name": "clinmedia-ops",
-  "version": "1.20.16",
+  "version": "1.20.25",
   "description": "Clinmedia Ops Control Center - Desktop application for managing WordPress migrations",
   "main": "src/electron/main.js",
   "scripts": {
@@ -19,7 +19,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "dist": "npm run build:react && npm run obfuscate && electron-builder --win",
-    "dist:fast": "electron-builder --dir"
+    "dist:fast": "electron-builder --dir",
+    "release": "npm run build:react && npm run obfuscate && electron-builder build --win --publish always"
   },
   "keywords": [
     "electron",
@@ -126,7 +127,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "installerFilename": "ClinmediaOps-Setup-${version}.exe",
+      "artifactName": "ClinmediaOps-Setup-${version}.${ext}",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Clinmedia Ops"

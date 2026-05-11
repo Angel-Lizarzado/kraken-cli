@@ -37,6 +37,8 @@ const { registerSslHandlers } = require('../main/ipc/ssl.ipc');
 const { registerWorkspaceHandlers } = require('../main/ipc/workspace.ipc');
 const { registerUtilsHandlers } = require('../main/ipc/utils.ipc');
 const { registerScannerHandlers } = require('../main/ipc/scanner.ipc');
+const { registerHealthHandlers } = require('../main/ipc/health.ipc');
+const { registerScalifylabsHandlers } = require('../main/ipc/scalifylabs.ipc');
 
 // ── Initialize IPC Handlers ──
 
@@ -76,6 +78,8 @@ function initializeIpcHandlers(ipcMain, mainWindow) {
   registerWorkspaceHandlers(ipcMain, mainWindow, scope);
   registerUtilsHandlers(ipcMain, mainWindow, scope);
   registerScannerHandlers(ipcMain, mainWindow, scope);
+  registerHealthHandlers(ipcMain, mainWindow);
+  registerScalifylabsHandlers(ipcMain, mainWindow);
 }
 
 // ── Cleanup ──

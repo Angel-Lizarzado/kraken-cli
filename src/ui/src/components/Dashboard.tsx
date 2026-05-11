@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Activity, Server, X, ChevronRight } from 'lucide-react';
+import { Activity, Server, X, ChevronRight, HeartPulse } from 'lucide-react';
 
 import type { Server as ServerType, MaintenanceAction } from '../types/server';
 import type { Cloud, Account } from '../types/cloud';
@@ -14,6 +14,7 @@ import DrawerMetrics from './dashboard/DrawerMetrics';
 import DrawerLogs from './dashboard/DrawerLogs';
 import DrawerDangerZone from './dashboard/DrawerDangerZone';
 import ConfirmDialog from './dashboard/ConfirmDialog';
+import HealthCheckModal from './HealthCheckModal';
 
 // ── Props ──
 interface DashboardProps {
@@ -51,6 +52,24 @@ const Dashboard: React.FC<DashboardProps> = ({
     execServerCommand,
   } = useIpc();
 
+  // ── Eliminar servidor ──
+  const handleDeleteServer = useCallback(
+    async (serverName: string) => {
+      const api = (window as any).api;
+      if (!api) return;
+      const result = await api.invoke('server:delete', { serverName });
+      if (!result.success) {
+        onLog(`Error al eliminar "${serverName}": ${result.error}`, 'error');
+        return;
+      }
+      // Cerrar drawer si el servidor eliminado estaba seleccionado
+      setSelectedServer((prev) => (prev?.name === serverName ? null : prev));
+      onLog(`Servidor "${serverName}" eliminado correctamente.`, 'success');
+      // config:updated broadcast del backend actualiza el árbol automáticamente
+    },
+    [onLog],
+  );
+
   // ── State ──
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [servers, setServers] = useState<ServerType[]>([]);
@@ -70,6 +89,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [logsLoading, setLogsLoading] = useState(false);
   // Caché de storageData por servidor para evitar doble llamada SSH
   const [storageCache, setStorageCache] = useState<Record<string, { estimatedSavings: string }>>({});
+  const [healthCheckServer, setHealthCheckServer] = useState<string | null>(null);
 
   // ── Derived ──
   const totalServers = servers.length;
@@ -259,7 +279,10 @@ const Dashboard: React.FC<DashboardProps> = ({
     [runServerDiagnostics],
   );
 
-  // ── Initial load ──
+  // ── Incremental config sync ──
+  // Cuando config cambia (ej. se agrega un servidor), hacemos merge:
+  // - Servidores existentes: preservan status/diagnostics (NO parpadeo)
+  // - Servidores nuevos: se inicializan con status='unknown' y se les corre diagnóstico
   useEffect(() => {
     try {
       const mappedAccounts: Account[] = (config?.accounts || []).map((account) => ({
@@ -273,34 +296,54 @@ const Dashboard: React.FC<DashboardProps> = ({
       }));
 
       // 🔥 HOTFIX v1.5.4: filtrar servidor 'Global'
-      const mappedServers: ServerType[] = (config?.destinationServers || []).filter(s => s.name !== 'Global').map((server) => ({
-        name: server.name,
-        type: server.type as 'plesk' | 'hostinger' | 'other',
-        isLinked: server.isLinked || false,
-        sshCredentials: server.sshCredentials,
-        pleskCliPath: server.pleskCliPath,
-        status: 'unknown',
-        diagnostics: undefined,
-      }));
+      const incomingServers = (config?.destinationServers || []).filter(s => s.name !== 'Global');
+
+      setServers((prev) => {
+        // Indexar servidores anteriores por nombre para O(1) lookup
+        const prevByName = new Map(prev.map(s => [s.name, s]));
+
+        const merged: ServerType[] = incomingServers.map((server) => {
+          const existing = prevByName.get(server.name);
+          if (existing) {
+            // Servidor existente → preservar telemetría, actualizar solo config
+            return {
+              ...existing,
+              // Actualizar propiedades de configuración que pudieron cambiar
+              type: server.type as 'plesk' | 'hostinger' | 'other',
+              isLinked: server.isLinked || false,
+              sshCredentials: server.sshCredentials,
+              pleskCliPath: server.pleskCliPath,
+            };
+          }
+          // Servidor nuevo → inicializar limpio
+          return {
+            name: server.name,
+            type: server.type as 'plesk' | 'hostinger' | 'other',
+            isLinked: server.isLinked || false,
+            sshCredentials: server.sshCredentials,
+            pleskCliPath: server.pleskCliPath,
+            status: 'unknown' as const,
+            diagnostics: undefined,
+          };
+        });
+
+        // Identificar servidores nuevos que necesitan diagnóstico
+        const newLinkedServers = merged.filter(
+          s => s.isLinked && !prevByName.has(s.name),
+        );
+
+        // Disparar diagnóstico solo para los NUEVOS (async, no bloqueante)
+        if (newLinkedServers.length > 0) {
+          Promise.all(
+            newLinkedServers.map(s => loadServerDiagnostics(s.name)),
+          ).catch(err => console.error('Error en diagnóstico de servidores nuevos:', err));
+        }
+
+        return merged;
+      });
 
       setAccounts(mappedAccounts);
-      setServers(mappedServers);
       setLoading(false);
-
-      // Declaramos la ejecución paralela limpia
-      const runDiagnosticsInParallel = async () => {
-        try {
-          await Promise.all(
-            mappedServers.filter(s => s.isLinked).map(server => loadServerDiagnostics(server.name))
-          );
-        } catch (diagError) {
-          console.error('Error en diagnóstico en paralelo:', diagError);
-        }
-      };
-
-      // La ejecutamos de forma segura
-      runDiagnosticsInParallel();
-
     } catch (error) {
       console.error('Error al cargar configuración en Dashboard:', error);
       setAccounts([]);
@@ -508,9 +551,32 @@ const Dashboard: React.FC<DashboardProps> = ({
                       <Server size={18} />
                       <h2 className="font-display font-bold text-base">{selectedServer.name}</h2>
                     </div>
-                    <button onClick={closeDrawer} className="btn btn--ghost p-1.5">
-                      <X size={16} />
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setHealthCheckServer(selectedServer.name)}
+                        className="btn btn--ghost p-1.5 text-xs flex items-center gap-1"
+                        style={{ color: 'var(--color-accent)' }}
+                        title="Monitor de salud de dominios"
+                      >
+                        <HeartPulse size={14} />
+                        Salud
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`¿Eliminar el servidor "${selectedServer.name}"? Esta acción no se puede deshacer.`)) {
+                            handleDeleteServer(selectedServer.name);
+                          }
+                        }}
+                        className="btn btn--ghost p-1.5 text-xs"
+                        style={{ color: 'var(--color-error, #ef4444)' }}
+                        title="Eliminar servidor"
+                      >
+                        Eliminar
+                      </button>
+                      <button onClick={closeDrawer} className="btn btn--ghost p-1.5">
+                        <X size={16} />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Drawer tabs */}
@@ -690,6 +756,14 @@ const Dashboard: React.FC<DashboardProps> = ({
         onInjectKey={handleInjectKey}
         onLog={onLog}
         publicKeyPath={config?.sshKeys?.publicKeyPath}
+      />
+
+      {/* ── Health Check Modal ── */}
+      <HealthCheckModal
+        isOpen={healthCheckServer !== null}
+        onClose={() => setHealthCheckServer(null)}
+        serverName={healthCheckServer || ''}
+        onLog={onLog}
       />
     </div>
   );

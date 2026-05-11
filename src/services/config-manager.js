@@ -123,10 +123,11 @@ class ConfigManager {
   }
 
   /**
-   * Retorna la ruta a la carpeta respaldos dentro del workspace.
+   * Retorna la ruta a la carpeta de respaldos.
+   * Convención: workspaceRoot ES la carpeta de respaldos — no se agrega subfolder.
    */
   getRespaldosPath() {
-    return path.join(this.getWorkspacePath(), 'respaldos');
+    return this.getWorkspacePath();
   }
 
   /**

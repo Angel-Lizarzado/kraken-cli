@@ -632,11 +632,13 @@ export const useIpc = () => {
   const scanWorkspace = useCallback(async (): Promise<{ success: boolean; error?: string }> => {
     try {
       const api = getApi();
+      console.log('[IPC] Invocando workspace:scan...');
       const result = await api.invoke(IPC_CHANNEL.WORKSPACE_SCAN);
+      console.log('[IPC] workspace:scan respondió:', result);
       return result as { success: boolean; error?: string };
     } catch (err: unknown) {
       const error = err instanceof Error ? err : new Error('Error desconocido');
-      console.error('Error scanning workspace:', error);
+      console.error('[IPC] workspace:scan falló:', error.message, error);
       return { success: false, error: error.message };
     }
   }, [getApi]);

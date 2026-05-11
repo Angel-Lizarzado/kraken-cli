@@ -779,48 +779,123 @@ class SshService {
   }
 
   /**
-   * 🔥 HOTFIX v1.6.0: Generar par de llaves SSH ed25519 usando ssh-keygen.
-   * @param {string} [keyPath='~/.ssh/id_ed25519'] - Ruta destino (sin .pub)
+   * Genera un par de llaves RSA-4096 usando el módulo nativo `crypto` de Node.js.
+   * No requiere ssh-keygen ni OpenSSH en el PATH — funciona en cualquier Windows.
+   *
+   * - Llave privada: formato PKCS#1 PEM (BEGIN RSA PRIVATE KEY) — compatible con ssh2 y OpenSSH.
+   * - Llave pública: formato OpenSSH wire (ssh-rsa <base64> <comment>) — compatible con authorized_keys.
+   *
+   * @param {string} [keyPath='~/.ssh/id_rsa'] - Ruta destino sin extensión
    * @returns {{ success: boolean, publicKey: string, path: string }}
    */
-  generateSshKey(keyPath = '~/.ssh/id_ed25519') {
+  generateSshKey(keyPath = '~/.ssh/id_rsa') {
+    const crypto = require('crypto');
     const resolvedPath = this.resolvePath(keyPath);
     const publicPath = resolvedPath + '.pub';
 
-    // CRÍTICO: No sobrescribir si ya existe
+    // No sobrescribir si ya existe
     if (fs.existsSync(resolvedPath) || fs.existsSync(publicPath)) {
-      throw new Error(`YA_EXISTE: Ya existe una llave SSH en ${resolvedPath}. No se sobrescribe por seguridad.`);
-    }
-
-    // Validar que ssh-keygen esté disponible
-    try {
-      execSync('ssh-keygen -?', { stdio: 'ignore', timeout: 5000 });
-    } catch {
       throw new Error(
-        'SSH_KEYGEN_NOT_FOUND: ssh-keygen no está disponible en el PATH del sistema. ' +
-        (process.platform === 'win32'
-          ? 'En Windows, instale Git for Windows (incluye OpenSSH) o active "OpenSSH Client" desde "Características opcionales" de Windows.'
-          : 'Instale openssh-client con su gestor de paquetes (apt install openssh-client, etc.).')
+        `YA_EXISTE: Ya existe una llave SSH en ${resolvedPath}. No se sobrescribe por seguridad.`
       );
     }
 
-    // Asegurar que ~/.ssh existe
+    // Asegurar ~/.ssh con permisos correctos
     const sshDir = path.dirname(resolvedPath);
     if (!fs.existsSync(sshDir)) {
-      fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
+      fs.mkdirSync(sshDir, { recursive: true });
+      try { fs.chmodSync(sshDir, 0o700); } catch { /* Windows ignora chmod */ }
     }
 
-    // Generar la llave
-    execSync(
-      `ssh-keygen -t ed25519 -N "" -f "${resolvedPath}"`,
-      { stdio: 'ignore', timeout: 30000 }
-    );
+    // ── Generar par RSA-4096 ──────────────────────────────────────────────────
+    const { privateKey: privObj, publicKey: pubObj } = crypto.generateKeyPairSync('rsa', {
+      modulusLength: 4096,
+    });
 
-    // Leer la llave pública generada
-    const publicKey = fs.readFileSync(publicPath, 'utf8').trim();
+    // ── Llave privada: PKCS#1 PEM (ssh2 y OpenSSH esperan este formato) ───────
+    const privateKeyPem = privObj.export({ type: 'pkcs1', format: 'pem' });
 
-    console.log(`[SSH-KEY] Llave ED25519 generada en: ${resolvedPath}`);
-    return { success: true, publicKey, path: resolvedPath };
+    // ── Llave pública: OpenSSH wire format ────────────────────────────────────
+    // Node exporta RSA pública en formato DER SubjectPublicKeyInfo (SPKI).
+    // OpenSSH authorized_keys espera: "ssh-rsa <base64(wire)> <comment>"
+    // El wire format RSA es: len("ssh-rsa") + "ssh-rsa" + len(e) + e + len(n) + n
+    const spkiDer = pubObj.export({ type: 'spki', format: 'der' });
+
+    // Parsear el DER SPKI para extraer el módulo (n) y el exponente (e)
+    // El DER SPKI RSA tiene la forma:
+    //   SEQUENCE { SEQUENCE { OID rsaEncryption, NULL }, BIT STRING { SEQUENCE { INT n, INT e } } }
+    // Buscamos el BIT STRING (tag 0x03) y dentro parseamos el inner SEQUENCE.
+    function parseDerSpkiRsa(der) {
+      let offset = 0;
+      const readLen = (buf, pos) => {
+        if (buf[pos] < 0x80) return { len: buf[pos], next: pos + 1 };
+        const numBytes = buf[pos] & 0x7f;
+        let len = 0;
+        for (let i = 0; i < numBytes; i++) len = (len << 8) | buf[pos + 1 + i];
+        return { len, next: pos + 1 + numBytes };
+      };
+
+      // Outer SEQUENCE
+      offset++; // skip 0x30
+      const outerLen = readLen(der, offset); offset = outerLen.next + outerLen.len;
+
+      // La estructura DER de SPKI: los primeros bytes tras el outer SEQUENCE son
+      // el AlgorithmIdentifier SEQUENCE. Saltamos directamente al BIT STRING (0x03).
+      // Recomenzamos desde el inicio del outer SEQUENCE para navegar correctamente.
+      let p = 1;
+      const ol = readLen(der, p); p = ol.next;
+
+      // AlgorithmIdentifier SEQUENCE
+      p++; // 0x30
+      const algoLen = readLen(der, p); p = algoLen.next + algoLen.len;
+
+      // BIT STRING (0x03)
+      p++; // skip tag 0x03
+      const bsLen = readLen(der, p); p = bsLen.next;
+      p++; // skip unused bits byte (0x00)
+
+      // Inner SEQUENCE { INT n, INT e }
+      p++; // 0x30
+      const innerLen = readLen(der, p); p = innerLen.next;
+
+      // INT n
+      p++; // 0x02
+      const nLen = readLen(der, p); p = nLen.next;
+      const n = der.slice(p, p + nLen.len); p += nLen.len;
+
+      // INT e
+      p++; // 0x02
+      const eLen = readLen(der, p); p = eLen.next;
+      const e = der.slice(p, p + eLen.len);
+
+      return { n, e };
+    }
+
+    const { n, e } = parseDerSpkiRsa(spkiDer);
+
+    // Construir el wire format: cada campo es uint32_be(len) + bytes
+    const encodeField = (buf) => {
+      const lenBuf = Buffer.allocUnsafe(4);
+      lenBuf.writeUInt32BE(buf.length, 0);
+      return Buffer.concat([lenBuf, buf]);
+    };
+
+    const keyType = Buffer.from('ssh-rsa');
+    const wireKey = Buffer.concat([
+      encodeField(keyType),
+      encodeField(e),
+      encodeField(n),
+    ]);
+
+    const comment = `clinmedia-ops@${os.hostname()}`;
+    const publicKeyOpenSsh = `ssh-rsa ${wireKey.toString('base64')} ${comment}`;
+
+    // ── Escribir archivos ─────────────────────────────────────────────────────
+    fs.writeFileSync(resolvedPath, privateKeyPem, { encoding: 'utf8', mode: 0o600 });
+    fs.writeFileSync(publicPath, publicKeyOpenSsh + '\n', { encoding: 'utf8', mode: 0o644 });
+
+    console.log(`[SSH-KEY] Par RSA-4096 generado (módulo nativo crypto) en: ${resolvedPath}`);
+    return { success: true, publicKey: publicKeyOpenSsh, path: resolvedPath };
   }
 
   resolvePath(filePath) {

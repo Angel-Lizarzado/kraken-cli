@@ -8,6 +8,7 @@ import SslModule from './components/SslModule';
 import ConfigPanel from './components/ConfigPanel';
 import MalwareScannerModule from './components/MalwareScannerModule';
 import TerminalModule from './components/TerminalModule';
+import ScalifylabsModule from './components/ScalifylabsModule';
 import { ToastProvider } from './components/Toast';
 import UpdateNotifier from './components/UpdateNotifier';
 import { ConfigProvider } from './contexts/ConfigContext';
@@ -31,6 +32,7 @@ const PERSISTENT_MODULE_IDS = [
   'config',
   'validation',
   'terminal',
+  'scalifylabs',
 ] as const;
 
 type ModuleId = typeof PERSISTENT_MODULE_IDS[number];
@@ -113,6 +115,10 @@ export default function App() {
 
               <ModulePane id="terminal" activeModule={activeModule}>
                 <TerminalModule entries={logEntries} onClear={clearLogs} />
+              </ModulePane>
+
+              <ModulePane id="scalifylabs" activeModule={activeModule}>
+                <ScalifylabsModule onLog={logToConsole} />
               </ModulePane>
 
             </div>

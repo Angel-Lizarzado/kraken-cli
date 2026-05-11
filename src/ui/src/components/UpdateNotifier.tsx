@@ -9,15 +9,17 @@ type UpdateState =
   | { phase: 'ready'; version: string };
 
 // ── UpdateNotifier ─────────────────────────────────────────────────────────────
-// Escucha los tres eventos IPC del autoUpdater y presenta:
+// Escucha los eventos IPC del autoUpdater y presenta:
 //   - Toast discreto (no bloqueante) para available + downloading
 //   - Modal centrado para ready (con opción de instalar o posponer)
+//   - [DEBUG] Logs en consola para TODOS los eventos del updater
 
 export default function UpdateNotifier() {
   const [update, setUpdate] = useState<UpdateState>({ phase: 'idle' });
   const [toastVisible, setToastVisible] = useState(false);
   const [dismissed, setDismissed] = useState(false);
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const readyFired = useRef(false);
 
   const showToast = useCallback(() => {
     setToastVisible(true);
@@ -32,10 +34,33 @@ export default function UpdateNotifier() {
   useEffect(() => {
     if (!window.electronAPI?.onEvent) return;
 
+    // ── [DEBUG] Listeners para TODOS los eventos del updater ────────────────
+    const cleanChecking = window.electronAPI.onEvent(
+      'updater:checking',
+      (payload: any) => {
+        console.log('[DEBUG-UPDATER] ▶ checking-for-update', payload);
+      }
+    );
+
+    const cleanNotAvailable = window.electronAPI.onEvent(
+      'updater:not-available',
+      (payload: any) => {
+        console.log('[DEBUG-UPDATER] ✓ update-not-available', payload);
+      }
+    );
+
+    const cleanError = window.electronAPI.onEvent(
+      'updater:error',
+      (payload: any) => {
+        console.error('[DEBUG-UPDATER] ✗ error', payload);
+      }
+    );
+
     // ── update-available ──────────────────────────────────────────────────────
     const cleanAvailable = window.electronAPI.onEvent(
       'updater:update-available',
-      (payload: { version: string }) => {
+      (payload: any) => {
+        console.log('[DEBUG-UPDATER] ⬇ update-available', payload);
         setUpdate({ phase: 'available', version: payload.version });
         setDismissed(false);
         showToast();
@@ -46,15 +71,12 @@ export default function UpdateNotifier() {
     // ── download-progress ─────────────────────────────────────────────────────
     const cleanProgress = window.electronAPI.onEvent(
       'updater:download-progress',
-      (payload: { percent: number }) => {
-        setUpdate((prev) => ({
+      (payload: any) => {
+        console.log('[DEBUG-UPDATER] ⏳ download-progress', payload);
+        setUpdate({
           phase: 'downloading',
           percent: payload.percent,
-          // conserva versión si ya la teníamos
-          ...(prev.phase === 'available' || prev.phase === 'downloading'
-            ? {}
-            : {}),
-        }));
+        });
         showToast();
         // No auto-ocultar mientras descarga
         if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
@@ -64,7 +86,8 @@ export default function UpdateNotifier() {
     // ── update-downloaded ─────────────────────────────────────────────────────
     const cleanDownloaded = window.electronAPI.onEvent(
       'updater:update-downloaded',
-      (payload: { version: string }) => {
+      (payload: any) => {
+        console.log('[DEBUG-UPDATER] ✔ update-downloaded', payload);
         setUpdate({ phase: 'ready', version: payload.version });
         setDismissed(false);
         setToastVisible(false);
@@ -72,7 +95,19 @@ export default function UpdateNotifier() {
       }
     );
 
+    // ── Señal al Main Process: el frontend ya tiene listeners activos ──────
+    // Esto resuelve la race condition: el chequeo de actualizaciones
+    // se dispara SOLO después de que este efecto se ejecuta.
+    if (!readyFired.current) {
+      readyFired.current = true;
+      console.log('[DEBUG-UPDATER] Enviando app:frontend-ready al Main Process...');
+      window.electronAPI.notifyFrontendReady?.();
+    }
+
     return () => {
+      cleanChecking();
+      cleanNotAvailable();
+      cleanError();
       cleanAvailable();
       cleanProgress();
       cleanDownloaded();

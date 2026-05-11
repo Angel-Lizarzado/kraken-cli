@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { HardDrive, FolderArchive, Globe, FileText, RefreshCw } from 'lucide-react';
 import ServerDetailView from './ServerDetailView';
 import type { Server } from '../../types/server';
@@ -26,6 +26,11 @@ export default function DrawerMetrics({ server, onRunDiagnostics, onLog, execSer
   const [loadingStorage, setLoadingStorage] = useState(false);
   const [fromCache, setFromCache] = useState(false);
 
+  // Usamos ref para que fetchStorage NO se recree cuando onStorageLoaded cambie.
+  // onStorageLoaded es un callback fire-and-forget: no debe provocar re-suscripción del effect.
+  const onStorageLoadedRef = useRef(onStorageLoaded);
+  useEffect(() => { onStorageLoadedRef.current = onStorageLoaded; });
+
   const fetchStorage = useCallback(async (forceRefresh = false) => {
     setLoadingStorage(true);
     try {
@@ -39,15 +44,16 @@ export default function DrawerMetrics({ server, onRunDiagnostics, onLog, execSer
       if (result.success && result.data) {
         setStorageData(result.data);
         setFromCache(result.fromCache ?? false);
-        onStorageLoaded?.(result.data);
+        onStorageLoadedRef.current?.(result.data);
       }
     } catch { /* silent */ } finally {
       setLoadingStorage(false);
     }
-  }, [server.name, onStorageLoaded]);
+  }, [server.name]); // ← onStorageLoaded FUERA de deps: nunca debe re-disparar el fetch
 
   // Mount: carga normal — usa caché si existe (0ms si hay hit)
   useEffect(() => { fetchStorage(false); }, [fetchStorage]);
+
 
   const handleForceRefresh = useCallback(() => {
     fetchStorage(true);

@@ -1,3 +1,4 @@
+import React from 'react';
 import { motion } from 'framer-motion';
 import { ChevronRight } from 'lucide-react';
 import StatusDot from './StatusDot';
@@ -9,7 +10,7 @@ interface ServerCardProps {
   onSelect: (server: Server) => void;
 }
 
-export default function ServerCard({ server, isSelected, onSelect }: ServerCardProps) {
+const ServerCard = React.memo(function ServerCard({ server, isSelected, onSelect }: ServerCardProps) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
@@ -57,14 +58,16 @@ export default function ServerCard({ server, isSelected, onSelect }: ServerCardP
       </div>
     </motion.div>
   );
-}
+});
+
+export default ServerCard;
 
 // ── Mini in-bar metrics ──
 interface MiniMetricsProps {
   diagnostics: NonNullable<Server['diagnostics']>;
 }
 
-function MiniMetrics({ diagnostics }: MiniMetricsProps) {
+const MiniMetrics = React.memo(function MiniMetrics({ diagnostics }: MiniMetricsProps) {
   const cpuPct = Math.min((diagnostics.cpu.load / (diagnostics.cpu.cores * 100)) * 100, 100);
   const ramPct = diagnostics.ram.percent;
   const diskPct = diagnostics.disk.percent;
@@ -106,4 +109,4 @@ function MiniMetrics({ diagnostics }: MiniMetricsProps) {
       })}
     </>
   );
-}
+});
