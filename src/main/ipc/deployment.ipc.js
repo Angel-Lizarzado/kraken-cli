@@ -27,6 +27,7 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
     try {
       const workspaceManager = getWorkspaceManager();
       await workspaceManager.initialize();
+      workspaceManager._invalidateDominiosCache(accountName, cloudName);
       const dominios = await workspaceManager.getDominiosProcesados(accountName, cloudName);
 
       const cloudPath = workspaceManager.getCloudPath(accountName, cloudName);
@@ -44,6 +45,19 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
     }
   });
 
+  // Graceful shutdown
+  ipcMain.handle('orquestador:detener', async () => {
+    try {
+      const deploymentService = getDeploymentService();
+      deploymentService.solicitarParada();
+      console.log('[IPC] Se ha solicitado detener el orquestador de despliegues (Graceful Shutdown)');
+      return { success: true, message: 'Parada solicitada' };
+    } catch (error) {
+      console.error('[IPC] Error al detener orquestador:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
   // Run batch deployment
   ipcMain.handle('deployment:run-batch', async (event, { accountName, serverName, sourceAccount, sourceCloud, manualList, forceClean }) => {
     if (isOperationRunning.value) {
@@ -58,6 +72,8 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
     }
 
     isOperationRunning.value = true;
+
+    let progressHandler = null;
 
     try {
       // Dead Man's Switch: Fail-Close estricto
@@ -84,6 +100,21 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
       sendDeploymentLog('Preparando lote de despliegue...', 'info');
       event.sender.send('deployment:state-changed', appState.getState('deployment'));
 
+      progressHandler = (progressEvent) => {
+        if (progressEvent.module === 'deployment') {
+          appState.update('deployment', {
+            currentDomain: progressEvent.domain,
+            currentProgress: progressEvent.progress,
+            currentMessage: progressEvent.message,
+          });
+          event.sender.send('deployment:state-changed', appState.getState('deployment'));
+          if (progressEvent.message && !progressEvent.message.includes('[BATCH]')) {
+             sendDeploymentLog(progressEvent.message, 'info', progressEvent.domain);
+          }
+        }
+      };
+      progressEmitter.on('progress', progressHandler);
+
       // Inyectar pending list en AppStateManager
       appState.update('deployment', {
         results: cleanList.map(d => ({ domain: d, status: 'pending', message: 'En cola...' })),
@@ -92,19 +123,35 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
 
       const result = await deploymentService.deployBatch(
         accountName, serverName, sourceAccount, sourceCloud, 'deployment-batch-' + Date.now(), cleanList,
-        (msg, type) => {
-          sendDeploymentLog(msg, type);
-          // Per-domain streaming: detect domain completion logs
-          const okMatch = msg.match(/^\[OK\]\s+(.+?):/);
-          const errMatch = msg.match(/^\[ERROR\]\s+(.+?):/);
-          if (okMatch) {
-            event.sender.send('domain-process-result', { module: 'MIGRATE', domain: okMatch[1], status: 'success', message: 'Despliegue completado' });
-          } else if (errMatch) {
-            const rest = msg.substring(msg.indexOf(':', msg.indexOf(']') + 1) + 1).trim();
-            event.sender.send('domain-process-result', { module: 'MIGRATE', domain: errMatch[1], status: 'error', message: rest || 'Error durante el despliegue' });
-          }
+        (msg, type, domain) => {
+          sendDeploymentLog(msg, type, domain);
         },
-        forceClean
+        forceClean,
+        (domain, eventName, payload) => {
+          // Sincronizar AppStateManager para que los logs posteriores no machaquen el progreso visual (Race Condition Fix)
+          const st = appState.getState('deployment');
+          if (st && st.results) {
+             const newResults = [...st.results];
+             const idx = newResults.findIndex(r => r.domain === domain);
+             if (idx >= 0) {
+                if (eventName === 'migrate-domain-start') {
+                   newResults[idx].status = 'running';
+                   newResults[idx].message = 'Procesando...';
+                } else if (eventName === 'migrate-domain-success') {
+                   newResults[idx].status = payload.message && payload.message.includes('Omitido') ? 'skipped' : 'success';
+                   newResults[idx].message = payload.message || 'Completado';
+                } else if (eventName === 'migrate-domain-error') {
+                   newResults[idx].status = 'error';
+                   newResults[idx].message = payload.message || payload.error || 'Error desconocido';
+                } else if (eventName === 'migrate-domain-warning') {
+                   newResults[idx].status = 'warning';
+                   newResults[idx].message = payload.message || 'Faltan archivos';
+                }
+             }
+             appState.update('deployment', { results: newResults });
+          }
+          event.sender.send(eventName, { domain, ...payload });
+        }
       );
 
       // Map results to deployment state
@@ -113,6 +160,7 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
           domain: r.domain,
           status: r.status,
           message: r.status === 'success' ? 'Despliegue completado' :
+                   r.status === 'warning' ? (r.errorDetails || 'Faltan archivos') :
                    r.status === 'completed_with_warnings' ? (r.errorDetails || 'Completado con advertencias') :
                    (r.errorDetails || r.error || 'Error desconocido')
         }));
@@ -129,13 +177,16 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
       return result;
     } catch (error) {
       console.error('[ERROR] Batch de despliegue fallo:', error.message);
-      EMIT.error(`Despliegue falló: ${error.message}`);
       sendDeploymentLog('[ERROR] ' + error.message, 'error');
       getAppStateManager().update('deployment', { isRunning: false, currentMessage: 'Error: ' + error.message });
       event.sender.send('deployment:state-changed', getAppStateManager().getState('deployment'));
       return { success: false, error: error.message };
     } finally {
       isOperationRunning.value = false;
+      const progressEmitter = getProgressEmitter();
+      if (progressHandler) {
+        progressEmitter.removeListener('progress', progressHandler);
+      }
     }
   });
 
@@ -186,8 +237,9 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
   });
 
   // Deployment log helper
-  function sendDeploymentLog(message, type) {
+  function sendDeploymentLog(message, type, domain = '') {
     if (type === undefined) type = 'info';
+    EMIT.emit(type, message, domain);
     const appState = getAppStateManager();
     if (!message) return;
     const state = appState.getState('deployment');

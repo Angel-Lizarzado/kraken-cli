@@ -38,7 +38,13 @@ const { registerWorkspaceHandlers } = require('../main/ipc/workspace.ipc');
 const { registerUtilsHandlers } = require('../main/ipc/utils.ipc');
 const { registerScannerHandlers } = require('../main/ipc/scanner.ipc');
 const { registerHealthHandlers } = require('../main/ipc/health.ipc');
-const { registerScalifylabsHandlers } = require('../main/ipc/scalifylabs.ipc');
+const { registerSourceSyncHandlers } = require('../main/ipc/sourcesync.ipc');
+const { registerMetricsHandlers, stopAllPolls } = require('../main/ipc/metrics.ipc');
+const { registerSecurityHandlers } = require('../main/ipc/security.ipc');
+const { registerFleetHandlers }    = require('../main/ipc/fleet.ipc');
+const { registerCmsHandlers }      = require('../main/ipc/cms.ipc');
+const { registerProvisioningHandlers } = require('../main/ipc/provisioning.ipc');
+const { registerSyncDnsHandlers } = require('../main/ipc/syncdns.ipc');
 
 // ── Initialize IPC Handlers ──
 
@@ -79,7 +85,13 @@ function initializeIpcHandlers(ipcMain, mainWindow) {
   registerUtilsHandlers(ipcMain, mainWindow, scope);
   registerScannerHandlers(ipcMain, mainWindow, scope);
   registerHealthHandlers(ipcMain, mainWindow);
-  registerScalifylabsHandlers(ipcMain, mainWindow);
+  registerSourceSyncHandlers(ipcMain, mainWindow);
+  registerMetricsHandlers(ipcMain, mainWindow);
+  registerSecurityHandlers(ipcMain, mainWindow);
+  registerFleetHandlers(ipcMain, mainWindow);
+  registerCmsHandlers(ipcMain, mainWindow);
+  registerProvisioningHandlers(ipcMain, mainWindow, scope);
+  registerSyncDnsHandlers(ipcMain, mainWindow, scope);
 }
 
 // ── Cleanup ──
@@ -93,6 +105,8 @@ function cleanup() {
     }
   });
   progressSubscribers.clear();
+
+  stopAllPolls();
 
   const sshService = getSshService();
   if (sshService) {

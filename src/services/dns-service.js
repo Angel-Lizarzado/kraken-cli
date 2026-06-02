@@ -1,73 +1,144 @@
-// dns-service.js — Bypass silencioso de Cloudflare para obtener IP real del servidor
-// v1.20.16: Stealth resolver — no emite logs a la UI, solo devuelve IP + hostname
+// dns-service.js — Idempotent DNS sync: GET→PUT/POST
+// v2.0.0: Lee zona completa paginada, construye índice O(1), aplica solo cambios necesarios.
+// El orquestador de 90 sitios puede llamarlo en paralelo sin escrituras duplicadas.
 
-const dns = require('dns');
-
-// Rangos de IPs de Cloudflare (https://www.cloudflare.com/ips/)
-// Bloque /24 común para proxied zones
-const CLOUDFLARE_RANGES = [
-  '173.245.48.', '103.21.244.', '103.22.200.', '103.31.4.',
-  '141.101.64.', '108.162.192.', '190.93.240.', '188.114.96.',
-  '197.234.240.', '198.41.128.', '162.158.0.', '104.16.',
-  '104.24.', '172.64.', '131.0.72.',
-];
-
-// Subdominios comunes que suelen NO estar proxied por Cloudflare
-const BYPASS_SUBDOMAINS = ['ftp', 'mail', 'cpanel', 'webmail', 'direct', 'cpcalendars', 'cpcontacts'];
-
-function isCloudflareIp(ip) {
-  return CLOUDFLARE_RANGES.some(range => ip.startsWith(range));
-}
-
-async function resolveIp(host) {
-  try {
-    const ips = await dns.promises.resolve4(host);
-    return ips[0] || null;
-  } catch {
-    return null;
-  }
-}
-
-async function resolveHostname(ip) {
-  try {
-    const names = await dns.promises.reverse(ip);
-    return names[0] || null;
-  } catch {
-    return null;
-  }
-}
+const { getCloudflareApiService } = require('./cloudflare-api-service');
 
 /**
- * Resuelve la IP real de un dominio saltándose el proxy de Cloudflare.
+ * Sincroniza registros DNS de un dominio en Cloudflare de forma idempotente.
  *
- * 1. Resuelve el dominio base.
- * 2. Si la IP pertenece a Cloudflare, prueba subdominios comunes
- *    (ftp, mail, cpanel, etc.) que suelen estar desproxied.
- * 3. Devuelve { ip, hostname } o null si no pudo resolver.
+ * Flujo:
+ *   1. getAllDnsRecords() — zona completa paginada
+ *   2. Construye índice fqdn → record para lookups O(1)
+ *   3. Para cada nombre (@, www, webmail, mail):
+ *      - IP correcta → SKIP (cero requests)
+ *      - IP diferente → PUT (update)
+ *      - No existe    → POST (create)
  *
- * @param {string} domain - Dominio base (ej: midominio.com)
- * @returns {Promise<{ ip: string, hostname: string } | null>}
+ * @param {string} zoneId    - Cloudflare zone ID
+ * @param {string} domain    - Dominio base (ej: ejemplo.com)
+ * @param {string} serverIp  - IP destino del servidor Plesk
+ * @param {boolean} proxied  - Activar proxy de Cloudflare (Nube Naranja)
+ * @returns {Promise<Array<{name: string, action: string, detail?: string}>>}
  */
-async function resolveRealIp(domain) {
-  // 1) Probar el dominio base directamente
-  const baseIp = await resolveIp(domain);
-  if (baseIp && !isCloudflareIp(baseIp)) {
-    const hostname = await resolveHostname(baseIp);
-    return { ip: baseIp, hostname: hostname || '' };
-  }
+async function syncDnsRecords(zoneId, domain, serverIp, proxied = false) {
+  const cfService = getCloudflareApiService();
 
-  // 2) Está detrás de Cloudflare — probar subdominios comunes de bypass
-  for (const sub of BYPASS_SUBDOMAINS) {
-    const subDomain = sub + '.' + domain;
-    const ip = await resolveIp(subDomain);
-    if (ip && !isCloudflareIp(ip)) {
-      const hostname = await resolveHostname(ip);
-      return { ip, hostname: hostname || '' };
+  // 1. Leer zona completa (paginación automática garantiza >100 registros)
+  const allRecords = await cfService.getAllDnsRecords(zoneId);
+
+  // 1.5. PURGA ESTRICTA DE IPv6 (AAAA)
+  // Plesk falla la emisión de SSL si detecta registros AAAA en Cloudflare pero opera en IPv4.
+  for (const record of allRecords) {
+    if (record.type === 'AAAA') {
+      console.log(`[PURGE] Eliminando registro AAAA obsoleto en ${record.name}`);
+      try {
+        await cfService.deleteDnsRecord(zoneId, record.id);
+      } catch (err) {
+        console.warn(`[PURGE] Error al eliminar AAAA en ${record.name}:`, err.message);
+      }
     }
   }
 
-  // 3) No se pudo bypassear Cloudflare
-  return null;
+  // 2. Construir índice fqdn → record para lookups O(1)
+  // Clave: "type|fqdn" para evitar colisiones entre A y CNAME del mismo nombre
+  const recordIndex = new Map();
+  for (const record of allRecords) {
+    const key = `A|${record.name}`;
+    if (record.type === 'A') {
+      recordIndex.set(key, record);
+    }
+  }
+
+  // 3. Definir los nombres objetivo
+  // '@' se mapea al dominio base, el resto son subdominios
+  const targets = [
+    { label: '@', fqdn: domain },
+    { label: 'www', fqdn: `www.${domain}` },
+    { label: 'webmail', fqdn: `webmail.${domain}` },
+    { label: 'mail', fqdn: `mail.${domain}` },
+  ];
+
+  const results = [];
+
+  // 4. Evaluar y aplicar cambios idempotentes
+  for (const target of targets) {
+    const key = `A|${target.fqdn}`;
+    const existing = recordIndex.get(key);
+
+    // ── CHEQUEO DE COLISIÓN (CNAME vs A) ──
+    const cnameConflict = allRecords.find(r => r.name === target.fqdn && r.type === 'CNAME');
+    if (cnameConflict) {
+      console.log(`[PURGE] Eliminando CNAME conflictivo en ${target.fqdn} para hacer espacio al registro A.`);
+      try {
+        await cfService.deleteDnsRecord(zoneId, cnameConflict.id);
+      } catch (err) {
+        console.warn(`[PURGE] Error al eliminar CNAME conflictivo en ${target.fqdn}:`, err.message);
+      }
+    }
+
+    // REGLA CRÍTICA DE ARQUITECTURA:
+    // Los registros de correo NUNCA deben usar la nube naranja de Cloudflare, 
+    // de lo contrario, Let's Encrypt y los puertos SMTP/IMAP/POP3 fallarán.
+    const isMailTarget = target.label === 'mail' || target.label === 'webmail';
+    const finalProxiedState = isMailTarget ? false : proxied;
+
+    if (existing) {
+      const isIpDifferent = existing.content !== serverIp;
+      const isProxyDifferent = !!existing.proxied !== !!finalProxiedState;
+
+      // Si la IP y el estado del proxy ya coinciden exactamente, saltamos
+      if (!isIpDifferent && !isProxyDifferent) {
+        console.log(`[DNS] SKIP ${target.fqdn} — IP y Proxy ya están correctos`);
+        results.push({ name: target.fqdn, action: 'skip' });
+        continue;
+      }
+
+      // Si la IP es distinta o el estado del proxy es distinto, actualizamos
+      console.log(`[DNS] UPDATE ${target.fqdn}: ${existing.content} → ${serverIp} (proxied: ${finalProxiedState})`);
+      try {
+        await cfService.updateDnsRecord(zoneId, existing.id, {
+          type: 'A',
+          name: target.fqdn,
+          content: serverIp,
+          ttl: 1,
+          proxied: finalProxiedState,
+        });
+        results.push({
+          name: target.fqdn,
+          action: 'update',
+          detail: `${existing.content} → ${serverIp} (Proxy: ${finalProxiedState})`,
+        });
+      } catch (updateError) {
+        const isCollision = updateError.message.includes('81058') || 
+                            (updateError.response?.data?.errors?.some(e => e.code === 81058));
+        if (isCollision) {
+          console.log(`[PURGE] Registro redundante eliminado por colisión (81058) en ${target.fqdn}.`);
+          await cfService.deleteDnsRecord(zoneId, existing.id);
+          results.push({
+            name: target.fqdn,
+            action: 'update',
+            detail: `Purgado por colisión (81058)`,
+          });
+        } else {
+          throw updateError;
+        }
+      }
+    } else {
+      // No existe → POST (create)
+      console.log(`[DNS] CREATE ${target.fqdn} → ${serverIp} (proxied: ${finalProxiedState})`);
+      await cfService.createDnsRecord(zoneId, {
+        type: 'A',
+        name: target.fqdn,
+        content: serverIp,
+        ttl: 1,
+        proxied: finalProxiedState,
+      });
+      results.push({ name: target.fqdn, action: 'create' });
+    }
+  }
+
+  return results;
 }
 
-module.exports = { resolveRealIp, isCloudflareIp };
+module.exports = { syncDnsRecords };

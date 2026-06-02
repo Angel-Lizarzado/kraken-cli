@@ -34,6 +34,9 @@ function sanitizeDomain(input) {
     throw new Error('El dominio no puede estar vacío');
   }
 
+  // Soporte Nativo IDN (Punycode): convertir "arquitecturajareño.es" -> "xn--arquitecturajareo-rxb.es"
+  domain = require('node:url').domainToASCII(domain);
+
   // Permitir wildcard solo al inicio: *.example.com
   const isWildcard = WILDCARD_PREFIX.test(domain);
   const toValidate  = isWildcard ? domain.slice(2) : domain;

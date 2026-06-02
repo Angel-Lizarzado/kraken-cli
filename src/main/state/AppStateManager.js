@@ -67,8 +67,8 @@ const DEFAULT_STATE = {
     recentLogs: [],
   },
 
-  // Cloudflare DNS Sync
-  cloudflare: {
+  // Stage 0: Cloudflare & DonDominio DNS Sync
+  syncdns: {
     isRunning: false,
     currentDomain: '',
     currentProgress: 0,
@@ -80,8 +80,23 @@ const DEFAULT_STATE = {
     recentLogs: [],
   },
 
+  // Cloudflare DNS Sync
+
   // SSL Let's Encrypt via Plesk
   ssl: {
+    isRunning: false,
+    currentDomain: '',
+    currentProgress: 0,
+    currentMessage: '',
+    totalDomains: 0,
+    currentIndex: 0,
+    results: [],
+    domainsQueue: [],
+    recentLogs: [],
+  },
+
+  // Provisioning (Fase 3: Red y SSL)
+  provisioning: {
     isRunning: false,
     currentDomain: '',
     currentProgress: 0,
@@ -113,6 +128,30 @@ const DEFAULT_STATE = {
     serverName: null,
     lastChecked: null,
   },
+
+  // SourceSync — historial de despliegues por dominio
+  sourcesync: {
+    isRunning: false,
+    activeDomain: '',
+    activeProgress: 0,
+    deploymentLog: [],
+    openAccordions: [],
+  },
+
+  // CMS Reconstructor — estado del batch activo
+  cms: {
+    isRunning: false,
+    dryRun: false,
+    serverName: '',
+    totalDomains: 0,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    history: [],   // volatile — no se persiste
+    startedAt: null,
+    finishedAt: null,
+    aborted: false,
+  },
 };
 
 // ── Volatile keys — nunca se persisten a disco ──
@@ -124,10 +163,14 @@ class AppStateManager {
     this.state = {
       extraction: { ...DEFAULT_STATE.extraction },
       deployment: { ...DEFAULT_STATE.deployment },
+      syncdns: { ...DEFAULT_STATE.syncdns },
       cloudflare: { ...DEFAULT_STATE.cloudflare },
       ssl: { ...DEFAULT_STATE.ssl },
+      provisioning: { ...DEFAULT_STATE.provisioning },
       malware: { ...DEFAULT_STATE.malware },
       sshConnection: { ...DEFAULT_STATE.sshConnection },
+      sourcesync: { ...DEFAULT_STATE.sourcesync },
+      cms: { ...DEFAULT_STATE.cms },
     };
     this._initialized = false;
     this._broadcastEnabled = true;
@@ -148,9 +191,12 @@ class AppStateManager {
       schema: {
         extraction: { type: 'object', default: DEFAULT_STATE.extraction },
         deployment: { type: 'object', default: DEFAULT_STATE.deployment },
+        syncdns: { type: 'object', default: DEFAULT_STATE.syncdns },
         cloudflare: { type: 'object', default: DEFAULT_STATE.cloudflare },
         ssl: { type: 'object', default: DEFAULT_STATE.ssl },
+        provisioning: { type: 'object', default: DEFAULT_STATE.provisioning },
         malware: { type: 'object', default: DEFAULT_STATE.malware },
+        // sourcesync NO se persiste a disco (deploymentLog es volátil)
       },
     });
 

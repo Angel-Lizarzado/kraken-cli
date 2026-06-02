@@ -29,9 +29,16 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
   const [cfTokenDisplay, setCfTokenDisplay] = useState('');
   const [cfTokenInput, setCfTokenInput] = useState('');
   const [savingCfToken, setSavingCfToken] = useState(false);
+  const [cfAccountIdInput, setCfAccountIdInput] = useState('');
+  const [savingCfAccountId, setSavingCfAccountId] = useState(false);
   const [ghTokenDisplay, setGhTokenDisplay] = useState('');
   const [ghTokenInput, setGhTokenInput] = useState('');
   const [savingGhToken, setSavingGhToken] = useState(false);
+  const [sslEmailInput, setSslEmailInput] = useState('');
+  const [savingSslEmail, setSavingSslEmail] = useState(false);
+  const [masterPasswordInput, setMasterPasswordInput] = useState('');
+  const [hasMasterPassword, setHasMasterPassword] = useState(false);
+  const [savingMasterPassword, setSavingMasterPassword] = useState(false);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [workspacePath, setWorkspacePath] = useState<string>('');
   const [respaldosPath, setRespaldosPath] = useState<string>('');
@@ -83,6 +90,24 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
             setGhTokenDisplay(ghResult.obfuscated || '');
             setGhTokenInput(ghResult.token || '');
           }
+
+          // Cargar SSL email
+          const sslResult = await api.invoke('config:get-ssl-email');
+          if (sslResult?.success) {
+            setSslEmailInput(sslResult.email || '');
+          }
+
+          // Cargar existencia de Master Password
+          const pwResult = await api.invoke('correo:contrasena:existe');
+          if (pwResult?.exito) {
+            setHasMasterPassword(pwResult.existe);
+          }
+          
+          // Cargar Cloudflare Account ID
+          const accountIdResult = await api.invoke('config:get-cloudflare-account-id');
+          if (accountIdResult?.success) {
+            setCfAccountIdInput(accountIdResult.accountId || '');
+          }
         }
       } catch { /* silencioso */ }
       // Cargar workspace path actual
@@ -125,6 +150,32 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
     }
   }, [cfTokenInput, setCloudflareToken, getCloudflareToken, onLog]);
 
+  const handleSaveCfAccountId = useCallback(async () => {
+    const api = (window as any).api;
+    const trimmed = cfAccountIdInput.trim();
+    if (!trimmed) {
+      onLog('No se puede guardar un Account ID vacío.', 'warning', 'config');
+      return;
+    }
+    setSavingCfAccountId(true);
+    try {
+      const result = await api?.invoke('config:set-cloudflare-account-id', { accountId: trimmed });
+      if (result?.success) {
+        toast.success('Cloudflare Account ID guardado.');
+        onLog('[CONFIG] Cloudflare Account ID actualizado.', 'success', 'config');
+      } else {
+        const errMsg = result?.error || 'Error desconocido';
+        onLog(`Error al guardar Account ID: ${errMsg}`, 'error', 'config');
+        toast.error(errMsg);
+      }
+    } catch (err: any) {
+      onLog(`Error al guardar Account ID: ${err?.message}`, 'error', 'config');
+      toast.error(err?.message || 'Error inesperado');
+    } finally {
+      setSavingCfAccountId(false);
+    }
+  }, [cfAccountIdInput, onLog, toast]);
+
   const handleSaveGhToken = useCallback(async () => {
     const api = (window as any).api;
     const trimmed = ghTokenInput.trim();
@@ -152,6 +203,56 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
       setSavingGhToken(false);
     }
   }, [ghTokenInput, onLog, toast]);
+
+  const handleSaveSslEmail = useCallback(async () => {
+    const api = (window as any).api;
+    const trimmed = sslEmailInput.trim();
+    setSavingSslEmail(true);
+    try {
+      const result = await api?.invoke('config:set-ssl-email', { email: trimmed });
+      if (result?.success) {
+        toast.success('Email SSL guardado correctamente.');
+        onLog('[CONFIG] Email para SSL actualizado.', 'success', 'config');
+      } else {
+        const errMsg = result?.error || 'Error desconocido';
+        onLog(`Error al guardar Email SSL: ${errMsg}`, 'error', 'config');
+        toast.error(errMsg);
+      }
+    } catch (err: any) {
+      onLog(`Error al guardar Email SSL: ${err?.message}`, 'error', 'config');
+      toast.error(err?.message || 'Error inesperado');
+    } finally {
+      setSavingSslEmail(false);
+    }
+  }, [sslEmailInput, onLog, toast]);
+
+  const handleSaveMasterPassword = useCallback(async () => {
+    const api = (window as any).api;
+    const trimmed = masterPasswordInput.trim();
+    if (!trimmed) {
+      onLog('No se puede guardar una contraseña vacía.', 'warning', 'config');
+      return;
+    }
+    setSavingMasterPassword(true);
+    try {
+      const result = await api?.invoke('correo:contrasena:guardar', { password: trimmed });
+      if (result?.exito) {
+        setHasMasterPassword(true);
+        setMasterPasswordInput('');
+        toast.success('Contraseña Maestra guardada correctamente.');
+        onLog('[CONFIG] Contraseña Maestra de Correos actualizada.', 'success', 'config');
+      } else {
+        const errMsg = result?.error || 'Error desconocido';
+        onLog(`Error al guardar Contraseña Maestra: ${errMsg}`, 'error', 'config');
+        toast.error(errMsg);
+      }
+    } catch (err: any) {
+      onLog(`Error al guardar Contraseña Maestra: ${err?.message}`, 'error', 'config');
+      toast.error(err?.message || 'Error inesperado');
+    } finally {
+      setSavingMasterPassword(false);
+    }
+  }, [masterPasswordInput, onLog, toast]);
 
   // 🔥 HOTFIX v1.6.0: Generate ED25519 SSH key
   const handleGenerateKey = useCallback(async () => {
@@ -494,6 +595,36 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
             </button>
           </div>
 
+          <div className="flex flex-col md:flex-row md:items-end gap-4 mt-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                Cloudflare Account ID
+                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                  (requerido para crear zonas nuevas)
+                </span>
+              </label>
+              <input
+                type="text"
+                value={cfAccountIdInput}
+                onChange={e => setCfAccountIdInput(e.target.value)}
+                placeholder="Ej. 1a2b3c4d5e6f7g8h9i0j..."
+                className="input font-mono text-xs"
+                style={{ width: '100%' }}
+              />
+            </div>
+            <button
+              onClick={handleSaveCfAccountId}
+              disabled={savingCfAccountId || !cfAccountIdInput.trim()}
+              className="btn btn--primary text-xs flex-shrink-0"
+            >
+              {savingCfAccountId ? (
+                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
+              ) : (
+                'Guardar'
+              )}
+            </button>
+          </div>
+
           {/* ── Separador ── */}
           <div style={{ borderTop: '1px solid var(--border-default)' }} />
 
@@ -534,6 +665,85 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
               className="btn btn--primary text-xs flex-shrink-0"
             >
               {savingGhToken ? (
+                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
+              ) : (
+                'Guardar'
+              )}
+            </button>
+          </div>
+
+          {/* ── Separador ── */}
+          <div style={{ borderTop: '1px solid var(--border-default)' }} />
+
+          {/* ── Certificados SSL ── */}
+          <div className="flex flex-col md:flex-row md:items-end gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                Email para certificados SSL
+                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                  (alertas de caducidad de Let's Encrypt)
+                </span>
+              </label>
+              <input
+                type="email"
+                value={sslEmailInput}
+                onChange={e => setSslEmailInput(e.target.value)}
+                placeholder="admin@ejemplo.com"
+                className="input font-mono text-xs"
+                style={{ width: '100%' }}
+              />
+              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                Let's Encrypt enviará alertas de renovación a este correo. Requerido para emisión de certificados SSL.
+              </p>
+            </div>
+            <button
+              onClick={handleSaveSslEmail}
+              disabled={savingSslEmail}
+              className="btn btn--primary text-xs flex-shrink-0"
+            >
+              {savingSslEmail ? (
+                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
+              ) : (
+                'Guardar'
+              )}
+            </button>
+          </div>
+
+          {/* ── Separador ── */}
+          <div style={{ borderTop: '1px solid var(--border-default)' }} />
+
+          {/* ── Contraseña Maestra de Correos ── */}
+          <div className="flex flex-col md:flex-row md:items-end gap-4">
+            <div className="flex-1">
+              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
+                Contraseña Maestra de Correos
+                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
+                  (creación automática de buzones info@)
+                </span>
+              </label>
+              <input
+                type="password"
+                value={masterPasswordInput}
+                onChange={e => setMasterPasswordInput(e.target.value)}
+                placeholder={hasMasterPassword ? "•••••••• (Contraseña almacenada en el sistema)" : "Ingrese contraseña maestra"}
+                className="input font-mono text-xs"
+                style={{ width: '100%' }}
+              />
+              {hasMasterPassword && (
+                <p className="mt-1 text-xs text-emerald-400">
+                  Contraseña almacenada en el sistema
+                </p>
+              )}
+              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
+                Esta contraseña se usará para crear o actualizar el correo info@dominio.com en las configuraciones automáticas. Se almacena de forma segura en el sistema.
+              </p>
+            </div>
+            <button
+              onClick={handleSaveMasterPassword}
+              disabled={savingMasterPassword || !masterPasswordInput.trim()}
+              className="btn btn--primary text-xs flex-shrink-0"
+            >
+              {savingMasterPassword ? (
                 <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
               ) : (
                 'Guardar'

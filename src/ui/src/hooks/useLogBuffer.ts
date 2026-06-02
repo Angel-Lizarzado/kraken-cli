@@ -113,7 +113,15 @@ export function useLogBuffer() {
     } else {
       api.receive('log:batch', handler);
     }
-    // No cleanup — component owns the log buffer
+
+    // Cleanup to prevent duplicate logs in React StrictMode
+    return () => {
+      if ((window as any).electronAPI && typeof (window as any).electronAPI.removeAllListeners === 'function') {
+        (window as any).electronAPI.removeAllListeners('log:batch');
+      } else if (api && typeof api.removeAllListeners === 'function') {
+        api.removeAllListeners('log:batch');
+      }
+    };
   }, []);
 
   const clear = () => {

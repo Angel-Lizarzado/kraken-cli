@@ -1,6 +1,26 @@
 const { getSshService } = require('./ssh-service');
 const { getProgressEmitter } = require('./progress-emitter');
 
+/**
+ * 🔥 v2.0.0: Subclase de Error para rate limits de Let's Encrypt.
+ * instanceof limpio — sin comparar strings en ssl-service.js.
+ */
+class LeRateLimitError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'LeRateLimitError';
+  }
+}
+
+// Patrones de rate limit de Let's Encrypt en stdout/stderr de sslit
+const LE_RATE_LIMIT_PATTERNS = [
+  /too many certificates already issued/i,
+  /rate limit/i,
+  /too many requests/i,
+  /rateLimited/i,
+  /error creating new order.*rate/i,
+];
+
 class PleskCliService {
   constructor() {
     this.sshService = getSshService();
@@ -160,7 +180,8 @@ class PleskCliService {
 
     try {
       const results = [];
-      const email = options.email || 'clinmediadev@gmail.com';
+      const email = options.email;
+      if (!email) throw new Error('SSL email is required. Configure it in Settings before running batch SSL.');
       const webroot = options.webroot || '/var/www/html';
 
       for (let i = 0; i < domains.length; i++) {
@@ -501,6 +522,48 @@ class PleskCliService {
       };
     }
   }
+  /**
+   * 🔥 v2.0.0: Emite un certificado SSL vía sslit (Let's Encrypt).
+   * Comando exacto: plesk bin extension --exec sslit --certificate -issue
+   *   -domain {domain} -wildcard false -www true -webmail true -mail true
+   *
+   * Si detecta rate limit de LE en el output, lanza LeRateLimitError
+   * para que ssl-service.js pueda abortar el batch inmediatamente.
+   *
+   * @param {Object} client - SSH client conectado al servidor Plesk
+   * @param {string} domain - Dominio para el certificado
+   * @returns {Promise<{success: boolean, domain: string, stdout: string}>}
+   * @throws {LeRateLimitError} Si Let's Encrypt devuelve rate limit
+   * @throws {Error} Si el comando falla por otra razón
+   */
+  async issueSslCertificate(client, domain) {
+    // 🔥 FIX: Purgar registros AAAA locales de Plesk para este dominio.
+    // Plesk aborta prematuramente el Let's Encrypt si detecta un AAAA local y el dominio no tiene IPv6 asignado en Plesk.
+    const purgeDbCommand = `plesk db "DELETE FROM dns_recs WHERE type='AAAA' AND dns_zone_id=(SELECT id FROM dns_zone WHERE name='${domain}');"`;
+    await this.sshService.executeCommand(client, purgeDbCommand);
+
+    // Sincronizar zona DNS local (por si Plesk usa su propio servicio Bind local para resolver)
+    await this.sshService.executeCommand(client, `plesk bin dns --sync-zone ${domain}`);
+
+    const command = `plesk bin extension --exec sslit --certificate -issue` +
+      ` -domain ${domain} -wildcard false -www true -webmail true -mail true`;
+
+    const result = await this.sshService.executeCommand(client, command);
+    const combined = `${result.stdout || ''} ${result.stderr || ''}`;
+
+    if (result.code !== 0) {
+      // Evaluar si es rate limit de Let's Encrypt
+      const isRateLimit = LE_RATE_LIMIT_PATTERNS.some(pattern => pattern.test(combined));
+      if (isRateLimit) {
+        throw new LeRateLimitError(
+          `Let's Encrypt rate limit detectado para ${domain}: ${combined.slice(0, 200)}`
+        );
+      }
+      throw new Error(`SSL issue failed for ${domain}: ${combined.slice(0, 300)}`);
+    }
+
+    return { success: true, domain, stdout: result.stdout };
+  }
 }
 
 // Singleton instance
@@ -513,4 +576,4 @@ function getPleskCliService() {
   return instance;
 }
 
-module.exports = { PleskCliService, getPleskCliService };
+module.exports = { PleskCliService, getPleskCliService, LeRateLimitError };

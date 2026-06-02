@@ -1,7 +1,7 @@
 {
-  "name": "clinmedia-ops",
-  "version": "1.20.25",
-  "description": "Clinmedia Ops Control Center - Desktop application for managing WordPress migrations",
+  "name": "kraken-cli",
+  "version": "1.20.99",
+  "description": "Kraken CLI Control Center - Desktop application for managing WordPress migrations",
   "main": "src/electron/main.js",
   "scripts": {
     "start": "electron .",
@@ -20,7 +20,7 @@
     "format:check": "prettier --check .",
     "dist": "npm run build:react && npm run obfuscate && electron-builder --win",
     "dist:fast": "electron-builder --dir",
-    "release": "npm run build:react && npm run obfuscate && electron-builder build --win --publish always"
+    "release": "npm run build:react && npm run obfuscate && dotenv -- electron-builder build --win --publish always"
   },
   "keywords": [
     "electron",
@@ -31,7 +31,7 @@
     "cloudflare",
     "migration"
   ],
-  "author": "Clinmedia",
+  "author": "Angel Lizarzado",
   "license": "MIT",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.2",
@@ -43,6 +43,7 @@
     "@types/react-dom": "^18.2.19",
     "concurrently": "^8.2.2",
     "cross-env": "^10.1.0",
+    "dotenv-cli": "^11.0.0",
     "electron": "^28.3.3",
     "electron-builder": "^24.9.1",
     "eslint": "^8.56.0",
@@ -59,6 +60,7 @@
   "dependencies": {
     "@types/ssh2": "^1.15.0",
     "axios": "^1.6.7",
+    "csv-parse": "^6.2.1",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.3",
     "keytar": "^7.9.0",
@@ -69,11 +71,13 @@
     "react-dom": "^18.2.0",
     "ssh2": "^1.15.0",
     "tar": "^7.5.13",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "whois": "^2.14.2",
+    "whois-json": "^2.0.4"
   },
   "build": {
-    "appId": "com.clinmedia.ops",
-    "productName": "Clinmedia Ops Control Center",
+    "appId": "com.kraken.cli",
+    "productName": "Kraken CLI Control Center",
     "directories": {
       "output": "release"
     },
@@ -109,7 +113,7 @@
     "publish": {
       "provider": "github",
       "owner": "Angel-Lizarzado",
-      "repo": "ClinmediaOps",
+      "repo": "kraken-cli",
       "releaseType": "release"
     },
     "win": {
@@ -124,13 +128,12 @@
       ]
     },
     "nsis": {
-      "oneClick": false,
+      "oneClick": true,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "artifactName": "ClinmediaOps-Setup-${version}.${ext}",
+      "artifactName": "KrakenCLI-Setup-${version}.${ext}",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Clinmedia Ops"
+      "shortcutName": "Kraken CLI"
     },
     "mac": {
       "icon": "assets/icon.png",

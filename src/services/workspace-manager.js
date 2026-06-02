@@ -28,10 +28,9 @@ class WorkspaceManager {
 
     // ── Resolución dinámica del workspace ──
     // configManager.getWorkspacePath() resuelve en orden:
-    //   1) CLINMEDIA_OPS_PATH env var
-    //   2) config.workspaceRoot (electron-store, configurable desde UI)
-    //   3) Fallback inteligente (D:\Centro de Control, C:\Centro de Control)
-    //   4) Fallback legacy (junto al ejecutable)
+    //   1) config.workspaceRoot (electron-store, configurable desde UI)
+    //   2) Fallback inteligente (D:\Centro de Control, C:\Centro de Control)
+    //   3) Fallback legacy (junto al ejecutable)
     this.workspaceRoot = this.configManager.getWorkspacePath();
     const respaldosPath = this.configManager.getRespaldosPath();
 
@@ -194,12 +193,22 @@ class WorkspaceManager {
   }
 
   /**
-   * 🔥 v1.8.2: escritura atómica con temp file para evitar corrupción por crash.
+   * 🔥 v1.8.2: escritura atómica con temp file y fsyncSync para garantizar la escritura física en disco.
    */
   async _atomicWriteJson(jsonPath, data) {
     const tmpPath = jsonPath + '.tmp';
-    await fsPromises.writeFile(tmpPath, JSON.stringify(data, null, 2), 'utf8');
-    await fsPromises.rename(tmpPath, jsonPath);
+    const fs = require('fs');
+    
+    try {
+      const fd = fs.openSync(tmpPath, 'w');
+      fs.writeFileSync(fd, JSON.stringify(data, null, 2), 'utf8');
+      fs.fsyncSync(fd);
+      fs.closeSync(fd);
+      fs.renameSync(tmpPath, jsonPath);
+    } catch (err) {
+      console.error(`[WORKSPACE-WRITE-ERROR] Falló la escritura atómica transaccional de ${jsonPath}: ${err.message}`);
+      throw err;
+    }
   }
 
   async setCloudflareSyncTimestamp(accountName, cloudName, domain) {

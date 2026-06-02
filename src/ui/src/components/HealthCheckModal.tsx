@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Copy, Check, Search, AlertTriangle, Globe, Wifi, WifiOff } from 'lucide-react';
+import { X, Copy, Check, Search, AlertTriangle, Globe, Wifi, WifiOff, Wrench } from 'lucide-react';
 
 // ── Types ──
 
@@ -10,6 +10,7 @@ interface HealthResult {
   code: number | null;
   message: string;
   time: number;
+  speed?: 'optimal' | 'slow' | 'critical' | 'timeout';
 }
 
 interface HealthProgress {
@@ -46,6 +47,9 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const scanStartRef = useRef<number>(0);
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [healingDomains, setHealingDomains] = useState<Set<string>>(new Set());
+  const [healedDomains, setHealedDomains] = useState<Set<string>>(new Set());
+  const [batchRepairing, setBatchRepairing] = useState(false);
 
   // Timer for elapsed time
   useEffect(() => {
@@ -187,6 +191,40 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
     () => results.filter(r => r.status === 'error' || r.status === 'dns'),
     [results],
   );
+
+  // Auto-repair a single domain
+  const handleHealDomain = useCallback(async (domain: string) => {
+    const api = (window as any).api;
+    if (!api || healingDomains.has(domain)) return;
+    setHealingDomains(prev => new Set([...prev, domain]));
+    try {
+      await api.invoke('health:heal-domain', { serverName, domain });
+      setHealedDomains(prev => new Set([...prev, domain]));
+      onLog(`[Health] Auto-Repair completado para ${domain}`, 'success');
+    } catch (err: any) {
+      onLog(`[Health] Fallo en Auto-Repair de ${domain}: ${err?.message}`, 'error');
+    } finally {
+      setHealingDomains(prev => { const n = new Set(prev); n.delete(domain); return n; });
+    }
+  }, [healingDomains, serverName, onLog]);
+
+  // Batch repair all failed domains
+  const handleBatchRepair = useCallback(async () => {
+    const api = (window as any).api;
+    if (!api || batchRepairing) return;
+    const failedDomains = criticalDomains.map(r => r.domain);
+    if (failedDomains.length === 0) return;
+    setBatchRepairing(true);
+    try {
+      await api.invoke('health:heal-batch', { serverName, domains: failedDomains });
+      setHealedDomains(new Set(failedDomains));
+      onLog(`[Health] Batch Repair completado: ${failedDomains.length} dominios`, 'success');
+    } catch (err: any) {
+      onLog(`[Health] Batch Repair falló: ${err?.message}`, 'error');
+    } finally {
+      setBatchRepairing(false);
+    }
+  }, [batchRepairing, criticalDomains, serverName, onLog]);
 
   // Copy failed domains
   const copyFailed = useCallback(async () => {
@@ -379,17 +417,32 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                     <AlertTriangle size={13} />
                     {criticalDomains.length} dominio{criticalDomains.length !== 1 ? 's' : ''} con problemas
                   </div>
-                  <button
-                    onClick={copyFailed}
-                    className="flex items-center gap-1 text-xs btn btn--ghost"
-                    style={{
-                      color: copied ? 'var(--color-success)' : 'var(--text-muted)',
-                      padding: '3px 8px',
-                    }}
-                  >
-                    {copied ? <Check size={12} /> : <Copy size={12} />}
-                    {copied ? 'Copiado' : 'Copiar lista'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleBatchRepair}
+                      disabled={batchRepairing}
+                      className="flex items-center gap-1 text-xs btn"
+                      style={{
+                        color: 'var(--color-warning)',
+                        backgroundColor: 'oklch(0.55 0.15 75 / 0.15)',
+                        border: '1px solid oklch(0.55 0.15 75 / 0.3)',
+                        padding: '3px 8px',
+                      }}
+                    >
+                      {batchRepairing
+                        ? <><span className="spinner" style={{ width: 10, height: 10 }} /> Reparando...</>
+                        : <><Wrench size={11} /> Reparar todos</>
+                      }
+                    </button>
+                    <button
+                      onClick={copyFailed}
+                      className="flex items-center gap-1 text-xs btn btn--ghost"
+                      style={{ color: copied ? 'var(--color-success)' : 'var(--text-muted)', padding: '3px 8px' }}
+                    >
+                      {copied ? <Check size={12} /> : <Copy size={12} />}
+                      {copied ? 'Copiado' : 'Copiar lista'}
+                    </button>
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {criticalDomains.slice(0, 12).map(r => (
@@ -436,7 +489,13 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               )}
               <div className="space-y-1">
                 {filtered.map((r) => (
-                  <ResultRow key={r.domain} result={r} />
+                  <ResultRow
+                    key={r.domain}
+                    result={r}
+                    isHealing={healingDomains.has(r.domain)}
+                    isHealed={healedDomains.has(r.domain)}
+                    onHeal={handleHealDomain}
+                  />
                 ))}
               </div>
             </div>
@@ -506,33 +565,93 @@ const CounterPill = React.memo(function CounterPill({ label, count, color, activ
   );
 });
 
-const ResultRow = React.memo(function ResultRow({ result }: { result: HealthResult }) {
+interface ResultRowProps {
+  result: HealthResult;
+  isHealing?: boolean;
+  isHealed?: boolean;
+  onHeal?: (domain: string) => void;
+}
+
+const SPEED_CONFIG = {
+  optimal: { label: '<1s',  color: 'var(--color-success)' },
+  slow:    { label: '1-5s', color: 'var(--color-warning)' },
+  critical:{ label: '>5s',  color: 'oklch(0.65 0.18 25)' },
+  timeout: { label: 'T/O',  color: 'var(--text-muted)'   },
+} as const;
+
+const ResultRow = React.memo(function ResultRow({ result, isHealing, isHealed, onHeal }: ResultRowProps) {
   const statusConfig = {
-    ok:       { icon: Wifi,       color: 'var(--color-success)', bg: 'oklch(0.55 0.15 145 / 0.1)' },
-    redirect: { icon: Wifi,       color: 'var(--color-info)',    bg: 'oklch(0.55 0.15 230 / 0.1)' },
-    warning:  { icon: AlertTriangle, color: 'var(--color-warning)', bg: 'oklch(0.55 0.15 75 / 0.1)' },
-    error:    { icon: WifiOff,    color: 'var(--color-error)',   bg: 'oklch(0.45 0.12 25 / 0.1)' },
-    dns:      { icon: Globe,      color: 'oklch(0.75 0.15 290)', bg: 'oklch(0.65 0.18 290 / 0.1)' },
+    ok:       { icon: Wifi,          color: 'var(--color-success)', bg: 'oklch(0.55 0.15 145 / 0.1)' },
+    redirect: { icon: Wifi,          color: 'var(--color-info)',    bg: 'oklch(0.55 0.15 230 / 0.1)' },
+    warning:  { icon: AlertTriangle, color: 'var(--color-warning)', bg: 'oklch(0.55 0.15 75 / 0.1)'  },
+    error:    { icon: WifiOff,       color: 'var(--color-error)',   bg: 'oklch(0.45 0.12 25 / 0.1)'  },
+    dns:      { icon: Globe,         color: 'oklch(0.75 0.15 290)', bg: 'oklch(0.65 0.18 290 / 0.1)' },
   } as const;
 
   const cfg = statusConfig[result.status] || statusConfig.error;
   const Icon = cfg.icon;
+  const speedCfg = result.speed ? SPEED_CONFIG[result.speed] : null;
+  const canRepair = (result.status === 'error' || result.status === 'warning') && onHeal;
 
   return (
     <div
       className="flex items-center gap-2.5 px-3 py-2 rounded-md text-xs"
-      style={{ backgroundColor: cfg.bg }}
+      style={{ backgroundColor: isHealed ? 'oklch(0.55 0.15 145 / 0.08)' : cfg.bg }}
     >
-      <Icon size={13} style={{ color: cfg.color, flexShrink: 0 }} />
+      <Icon size={13} style={{ color: isHealed ? 'var(--color-success)' : cfg.color, flexShrink: 0 }} />
       <span className="font-mono flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
         {result.domain}
       </span>
-      <span className="font-mono" style={{ color: cfg.color, minWidth: '60px', textAlign: 'right' }}>
-        {result.code ? `${result.code}` : result.message}
+
+      {/* Código HTTP */}
+      <span className="font-mono" style={{ color: cfg.color, minWidth: '44px', textAlign: 'right' }}>
+        {result.code ? `${result.code}` : result.status.toUpperCase()}
       </span>
-      <span className="font-mono" style={{ color: 'var(--text-muted)', minWidth: '45px', textAlign: 'right' }}>
+
+      {/* Badge de velocidad */}
+      {speedCfg && (
+        <span
+          className="font-mono text-[10px] px-1.5 py-0.5 rounded"
+          style={{
+            color: speedCfg.color,
+            backgroundColor: `${speedCfg.color}18`,
+            minWidth: 36,
+            textAlign: 'center',
+          }}
+        >
+          {speedCfg.label}
+        </span>
+      )}
+
+      {/* Tiempo */}
+      <span className="font-mono" style={{ color: 'var(--text-muted)', minWidth: '52px', textAlign: 'right' }}>
         {result.time}ms
       </span>
+
+      {/* Botón Auto-Repair */}
+      {canRepair && (
+        <button
+          onClick={() => onHeal!(result.domain)}
+          disabled={isHealing || isHealed}
+          title={isHealed ? 'Reparado' : 'Auto-Repair: plesk repair fs + web'}
+          className="flex items-center gap-1 text-[10px] btn"
+          style={{
+            color: isHealed ? 'var(--color-success)' : 'var(--color-warning)',
+            backgroundColor: isHealed ? 'oklch(0.55 0.15 145 / 0.15)' : 'oklch(0.55 0.15 75 / 0.15)',
+            border: `1px solid ${isHealed ? 'oklch(0.55 0.15 145 / 0.3)' : 'oklch(0.55 0.15 75 / 0.3)'}`,
+            padding: '2px 6px',
+            flexShrink: 0,
+          }}
+        >
+          {isHealing
+            ? <span className="spinner" style={{ width: 9, height: 9 }} />
+            : isHealed
+              ? <Check size={10} />
+              : <Wrench size={10} />
+          }
+          {isHealing ? 'Reparando' : isHealed ? 'Reparado' : 'Repair'}
+        </button>
+      )}
     </div>
   );
 });

@@ -15,6 +15,7 @@ export interface ModuleOperationState {
   filterApplied: boolean;
   zones?: Array<{ domain: string; zoneName: string | null; zoneStatus: string; aRecord: { ip: string; proxied: boolean; ttl: number } | null; cnameRecord: { target: string; proxied: boolean } | null; error?: string; lastCloudflareSync?: string }>;
   isRunning?: boolean;
+  currentDomain?: string;
 }
 
 export interface ServerStatusData {
@@ -116,17 +117,18 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (!mainState) return;
 
     const moduleMap: Record<string, string> = {
+      syncdns: 'syncdns',
       extraction: 'extraction',
       deployment: 'deployment',
-      cloudflare: 'dns',
+      cloudflare: 'cloudflare',
       ssl: 'ssl',
-      malware: 'validation',
+      malware: 'malware',
     };
 
     for (const [moduleKey, moduleState] of Object.entries(mainState)) {
       const ms = moduleState as ModuleProcessState;
       const ctxModuleId = moduleMap[moduleKey];
-      if (!ctxModuleId) continue;
+      if (!ctxModuleId || !ms) continue;
 
       const hasResults = ms.results && ms.results.length > 0;
       if (ms.isRunning || hasResults) {
@@ -137,6 +139,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             total: ms.totalDomains,
           },
           statusMessage: ms.currentMessage || '',
+          isRunning: ms.isRunning,
+          currentDomain: ms.currentDomain,
         };
 
         // 🔥 v1.14: solo inyectar results si Main realmente los tiene.

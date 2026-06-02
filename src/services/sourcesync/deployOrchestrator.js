@@ -1,5 +1,5 @@
 /**
- * @module scalifylabs/deployOrchestrator
+ * @module SOURCESYNC/deployOrchestrator
  * @description Orquestador de despliegue automatizado de proyectos Next.js (Standalone) en Plesk.
  *
  * Coordina el flujo completo de configuración inicial de un dominio:
@@ -13,7 +13,7 @@
  * El orquestador recibe una instancia NodeSSH ya conectada — no gestiona conexiones.
  *
  * Uso típico desde un IPC handler:
- *   const { orchestrarDespliegue } = require('./scalifylabs/deployOrchestrator');
+ *   const { orchestrarDespliegue } = require('./SOURCESYNC/deployOrchestrator');
  *   await orchestrarDespliegue(sshConectado, config, (evento) => mainWindow.webContents.send('scalify:progreso', evento));
  */
 
@@ -69,18 +69,18 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
   // Validar parámetros obligatorios antes de empezar
   if (!domain || !httpsUrl || !repoOwner || !repoName) {
     throw new Error(
-      '[SCALIFYLABS:Orquestador] Parámetros obligatorios faltantes: domain, httpsUrl, repoOwner, repoName.'
+      '[SOURCESYNC:Orquestador] Parámetros obligatorios faltantes: domain, httpsUrl, repoOwner, repoName.'
     );
   }
   if (vincularGitHub && !githubToken) {
     throw new Error(
-      '[SCALIFYLABS:Orquestador] githubToken es obligatorio cuando vincularGitHub=true.'
+      '[SOURCESYNC:Orquestador] githubToken es obligatorio cuando vincularGitHub=true.'
     );
   }
 
   // Obtener el ProgressEmitter singleton para reportar a la UI
   const emitter = getProgressEmitter();
-  const taskId = emitter.createTask('scalifylabs-deploy', domain, `Iniciando despliegue de ${domain}...`);
+  const taskId = emitter.createTask('SOURCESYNC-deploy', domain, `Iniciando despliegue de ${domain}...`);
 
   /**
    * Función auxiliar para emitir progreso tanto al ProgressEmitter como al callback externo.
@@ -113,7 +113,7 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
       emitirProgreso(
         8,
         'plesk-suscripcion-creada',
-        `[1/5] Suscripción creada y asignada a ScalifyLabs (Dev). IP detectada automáticamente.`
+        `[1/5] Suscripción creada y asignada a SOURCESYNC (Dev). IP detectada automáticamente.`
       );
     } else {
       emitirProgreso(
@@ -170,11 +170,11 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
             },
           }
         );
-        console.log(`[SCALIFYLABS:GitHub] Llave registrada exitosamente en GitHub.`);
+        console.log(`[SOURCESYNC:GitHub] Llave registrada exitosamente en GitHub.`);
       } catch (err) {
         if (err.response && err.response.status === 422) {
           // 422 = "key is already in use" — la llave ya está registrada, el clone funcionará igualmente.
-          console.log(`[SCALIFYLABS:GitHub] La llave ya existe en GitHub (422). Continuando...`);
+          console.log(`[SOURCESYNC:GitHub] La llave ya existe en GitHub (422). Continuando...`);
         } else {
           // Cualquier otro error (401 Unauthorized, 404 Not Found, etc.) sí es crítico.
           throw err;
@@ -192,8 +192,27 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
       `[4/5] Repositorio vinculado: ${urlSsh}. Deploy action: "sh ./deploy.sh".`
     );
 
-    // ── PASO 5: Completado — el pull ya se ejecutó dentro de configurarRepoEnPlesk ──
     emitirProgreso(87, 'primer-deploy', `[5/5] Pull inicial completado. Archivos del repositorio clonados.`);
+
+    // --- [NUEVO] Aprovisionamiento Automático de Correo ---
+    try {
+      emitirProgreso(95, 'correo-setup', `[6/6] Configurando buzón info@${domain}...`);
+      const { asegurarBuzonInfo } = require('../mail-service');
+      // En deployOrchestrator, ssh es un objeto de node-ssh
+      const executeFn = async (cmd) => {
+        const { stdout, stderr, code } = await ssh.execCommand(cmd);
+        return { stdout, stderr };
+      };
+      const mailRes = await asegurarBuzonInfo(domain, executeFn);
+      
+      if (mailRes.exito) {
+        emitirProgreso(98, 'correo-ok', `[CORREO] ${mailRes.mensaje}`);
+      } else {
+        emitirProgreso(98, 'correo-warn', `[CORREO-WARN] ${mailRes.mensaje}`);
+      }
+    } catch (err) {
+      console.warn(`[SOURCESYNC:Orquestador] Error fatal en aprovisionamiento de correo para ${domain}:`, err.message);
+    }
 
     emitirProgreso(
       100,
@@ -226,7 +245,7 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
       `Error fatal en despliegue de ${domain}: ${mensajeError}`
     );
 
-    console.error(`[SCALIFYLABS:Orquestador] Error durante despliegue de ${domain}:`, error);
+    console.error(`[SOURCESYNC:Orquestador] Error durante despliegue de ${domain}:`, error);
 
     return {
       exito: false,
@@ -249,10 +268,10 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
  */
 async function dispararFetch(ssh, domain) {
   if (!domain) {
-    throw new Error('[SCALIFYLABS:Orquestador] dispararFetch: domain es obligatorio.');
+    throw new Error('[SOURCESYNC:Orquestador] dispararFetch: domain es obligatorio.');
   }
 
-  console.log(`[SCALIFYLABS:Orquestador] Disparando fetch para ${domain}...`);
+  console.log(`[SOURCESYNC:Orquestador] Disparando fetch para ${domain}...`);
 
   const { code, stdout, stderr } = await ssh.execCommand(
     `plesk ext git --fetch -domain ${domain}`
@@ -260,12 +279,13 @@ async function dispararFetch(ssh, domain) {
 
   if (code !== 0) {
     const mensajeError = `Fetch falló para ${domain} (código ${code}): ${stderr || stdout}`;
-    console.error(`[SCALIFYLABS:Orquestador] ${mensajeError}`);
+    console.error(`[SOURCESYNC:Orquestador] ${mensajeError}`);
     return { exito: false, salida: stdout, error: mensajeError };
   }
 
-  console.log(`[SCALIFYLABS:Orquestador] Fetch completado para ${domain}.`);
+  console.log(`[SOURCESYNC:Orquestador] Fetch completado para ${domain}.`);
   return { exito: true, salida: stdout };
 }
 
 module.exports = { orchestrarDespliegue, dispararFetch };
+

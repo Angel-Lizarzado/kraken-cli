@@ -7,8 +7,8 @@
 
 const https = require('https');
 
-const GIST_ID = 'd0b2094cd93f1ea125e06dd1782cdc65';
-const FILE_NAME = 'clinmedia-ops-license.json';
+const GIST_ID = '60fbc238ad8201f185d790434b579fb7';
+const FILE_NAME = 'kraken-cli-license.json';
 
 const verifyKillSwitch = () => {
   return new Promise((resolve, reject) => {
@@ -21,7 +21,7 @@ const verifyKillSwitch = () => {
       timeout: 5000,
       headers: {
         'Accept': 'application/vnd.github.v3+json',
-        'User-Agent': 'clinmedia-ops/1.0',
+        'User-Agent': 'kraken-cli/1.0',
       },
     }, (res) => {
       const chunks = [];

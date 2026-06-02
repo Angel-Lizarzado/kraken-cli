@@ -1,14 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import Layout from './components/Layout';
 import Dashboard from './components/Dashboard';
+import SyncDnsModule from './components/SyncDnsModule';
 import ExtractionModule from './components/ExtractionModule';
 import DeploymentModule from './components/DeploymentModule';
-import DnsSyncModule from './components/DnsSyncModule';
-import SslModule from './components/SslModule';
+import ProvisioningModule from './components/ProvisioningModule';
 import ConfigPanel from './components/ConfigPanel';
 import MalwareScannerModule from './components/MalwareScannerModule';
 import TerminalModule from './components/TerminalModule';
-import ScalifylabsModule from './components/ScalifylabsModule';
+import SourceSyncModule from './components/SourceSyncModule';
+import SecurityModule from './components/SecurityModule';
+import CmsReconstructorModule from './components/CmsReconstructorModule';
 import { ToastProvider } from './components/Toast';
 import UpdateNotifier from './components/UpdateNotifier';
 import { ConfigProvider } from './contexts/ConfigContext';
@@ -25,14 +27,16 @@ import type { LogLevel } from './types/ipc';
 // Esto resuelve el desmontaje destructivo que causaba AnimatePresence + key={activeModule}.
 const PERSISTENT_MODULE_IDS = [
   'dashboard',
+  'syncdns',
   'extraction',
   'migration',
-  'dns',
-  'ssl',
+  'provisioning',
   'config',
   'validation',
   'terminal',
-  'scalifylabs',
+  'sourcesync',
+  'security',
+  'cms',
 ] as const;
 
 type ModuleId = typeof PERSISTENT_MODULE_IDS[number];
@@ -89,6 +93,10 @@ export default function App() {
                 <Dashboard onLog={logToConsole} />
               </ModulePane>
 
+              <ModulePane id="syncdns" activeModule={activeModule}>
+                <SyncDnsModule onLog={logToConsole} />
+              </ModulePane>
+
               <ModulePane id="extraction" activeModule={activeModule}>
                 <ExtractionModule onLog={logToConsole} />
               </ModulePane>
@@ -97,12 +105,8 @@ export default function App() {
                 <DeploymentModule onLog={logToConsole} />
               </ModulePane>
 
-              <ModulePane id="dns" activeModule={activeModule}>
-                <DnsSyncModule onLog={logToConsole} />
-              </ModulePane>
-
-              <ModulePane id="ssl" activeModule={activeModule}>
-                <SslModule onLog={logToConsole} />
+              <ModulePane id="provisioning" activeModule={activeModule}>
+                <ProvisioningModule onLog={logToConsole} />
               </ModulePane>
 
               <ModulePane id="config" activeModule={activeModule}>
@@ -117,8 +121,16 @@ export default function App() {
                 <TerminalModule entries={logEntries} onClear={clearLogs} />
               </ModulePane>
 
-              <ModulePane id="scalifylabs" activeModule={activeModule}>
-                <ScalifylabsModule onLog={logToConsole} />
+              <ModulePane id="sourcesync" activeModule={activeModule}>
+                <SourceSyncModule onLog={logToConsole} />
+              </ModulePane>
+
+              <ModulePane id="security" activeModule={activeModule}>
+                <SecurityModule onLog={logToConsole} />
+              </ModulePane>
+
+              <ModulePane id="cms" activeModule={activeModule}>
+                <CmsReconstructorModule onLog={logToConsole} />
               </ModulePane>
 
             </div>

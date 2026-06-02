@@ -11,14 +11,15 @@ const { getConfigManager } = require('./config-manager');
  */
 function toPunycode(domain) {
   if (!domain || typeof domain !== 'string') return domain;
+  const cleaned = domain.trim().replace(/[\u200B-\u200D\uFEFF]/g, '');
   try {
-    const ascii = domainToASCII(domain);
-    if (ascii !== domain) {
-      console.log(`[DNS] Punycode: ${domain} → ${ascii}`);
+    const ascii = domainToASCII(cleaned);
+    if (ascii !== cleaned) {
+      console.log(`[DNS] Punycode: ${cleaned} → ${ascii}`);
     }
     return ascii;
   } catch {
-    return domain;
+    return cleaned;
   }
 }
 
@@ -36,9 +37,9 @@ class CloudflareApiService {
     this._globalZonesBackup = null;
   }
 
-  async initialize() {
+  async initialize(injectedToken = null) {
     const config = await this.configManager.initialize();
-    const rawToken = config.cloudflare?.apiToken;
+    let rawToken = injectedToken || config.cloudflare?.apiToken;
 
     if (!rawToken) {
       throw new Error('Cloudflare API token not configured');
@@ -66,11 +67,62 @@ class CloudflareApiService {
     this.apiClient = axios.create({
       baseURL: 'https://api.cloudflare.com/client/v4',
       headers: {
-        'Authorization': `Bearer ${cleanToken}`,
+        'Authorization': `Bearer ${cleanToken.trim()}`,
         'Content-Type': 'application/json'
       },
       timeout: 30000
     });
+    this.apiClient.interceptors.request.use(request => {
+      console.log("\n=== 🕵️ SPY: RAW AXIOS REQUEST ===");
+      console.log(`URL: ${request.baseURL}${request.url}`);
+      console.log(`METHOD: ${request.method.toUpperCase()}`);
+      console.log(`HEADERS:`, JSON.stringify(request.headers, null, 2));
+      console.log("==================================\n");
+      return request;
+    });
+    // 🔥 v2.0.0: Interceptor 429 — Rate Limit con backoff exponencial + jitter
+    const MAX_RETRIES = 5;
+    this.apiClient.interceptors.response.use(
+      (response) => response,
+      async (error) => {
+        const config = error.config;
+        if (!config) return Promise.reject(error);
+
+        config.__retryCount = config.__retryCount || 0;
+
+        if (error.response?.status === 429) {
+          if (config.__retryCount >= MAX_RETRIES) {
+            console.error(`[CF-429] Límite de reintentos alcanzado (${MAX_RETRIES}). Abortando petición.`);
+            return Promise.reject(new Error(`Cloudflare Rate Limit (429): Límite de reintentos alcanzado (${MAX_RETRIES}).`));
+          }
+          config.__retryCount++;
+
+          // Calcular espera: X-RateLimit-Reset (epoch) > Retry-After (secs) > backoff
+          const headers = error.response.headers || {};
+          let waitMs;
+
+          if (headers['x-ratelimit-reset']) {
+            const resetEpoch = parseInt(headers['x-ratelimit-reset'], 10);
+            waitMs = Math.max((resetEpoch * 1000) - Date.now(), 1000);
+          } else if (headers['retry-after']) {
+            waitMs = parseInt(headers['retry-after'], 10) * 1000;
+          } else {
+            // Backoff exponencial: 2^n * 1000ms
+            waitMs = Math.pow(2, config.__retryCount) * 1000;
+          }
+
+          // Jitter ±10% para evitar thundering herd
+          const jitter = waitMs * 0.1 * (Math.random() * 2 - 1);
+          waitMs = Math.round(waitMs + jitter);
+
+          console.warn(`[CF-429] Rate limited. Retry ${config.__retryCount}/${MAX_RETRIES} en ${waitMs}ms`);
+          await new Promise(resolve => setTimeout(resolve, waitMs));
+          return this.apiClient(config);
+        }
+
+        return Promise.reject(error);
+      }
+    );
 
     try {
       await this.testConnection();
@@ -230,16 +282,31 @@ class CloudflareApiService {
       let targetZone = null;
       const fastZones = await this.getZones(punycodeApex);
       if (fastZones && fastZones.length > 0) {
-        targetZone = fastZones.find(z => z.name === punycodeApex);
+        targetZone = fastZones.find(z => {
+          try {
+            const safeZoneName = domainToASCII(z.name);
+            return safeZoneName === punycodeApex;
+          } catch (e) {
+            return z.name === punycodeApex; // Fallback silencioso
+          }
+        });
       }
 
       // ── PASO 2: Fallback (Barrido global) ──
       if (!targetZone) {
         const allZones = await this._getAllZonesWithPagination();
-        targetZone = allZones.find(z =>
-          z.name.toLowerCase() === punycodeApex ||
-          (z.original_name && z.original_name.toLowerCase() === apexDomain)
-        );
+        targetZone = allZones.find(z => {
+          try {
+            const safeZoneName = domainToASCII(z.name.toLowerCase());
+            let safeOriginalName = z.original_name ? domainToASCII(z.original_name.toLowerCase()) : null;
+            return safeZoneName === punycodeApex || safeOriginalName === punycodeApex ||
+                   z.name.toLowerCase() === punycodeApex ||
+                   (z.original_name && z.original_name.toLowerCase() === apexDomain);
+          } catch (e) {
+            return z.name.toLowerCase() === punycodeApex ||
+                   (z.original_name && z.original_name.toLowerCase() === apexDomain);
+          }
+        });
       }
 
       // ── Manejo de Resultado ──
@@ -292,13 +359,55 @@ class CloudflareApiService {
     }
   }
 
+  /**
+   * 🔥 v2.0.0: Obtiene TODOS los registros DNS de una zona con paginación automática.
+   * Itera páginas de 100 registros hasta agotar result_info.total_pages.
+   * Crítico para zonas con >100 registros: garantiza lectura completa antes de
+   * cualquier evaluación de idempotencia en dns-service.
+   *
+   * @param {string} zoneId - Cloudflare zone ID
+   * @returns {Promise<Array>} Todos los registros DNS de la zona
+   */
+  async getAllDnsRecords(zoneId) {
+    const allRecords = [];
+    let page = 1;
+    let totalPages = 1;
+    const perPage = 100;
+
+    while (page <= totalPages) {
+      const response = await this.apiClient.get(`/zones/${zoneId}/dns_records`, {
+        params: { per_page: perPage, page }
+      });
+
+      const records = response.data.result || [];
+      allRecords.push(...records);
+
+      const info = response.data.result_info;
+      if (info) {
+        totalPages = info.total_pages || Math.ceil(info.total_count / perPage);
+      } else {
+        break;
+      }
+      page++;
+    }
+
+    console.log(`[CF] getAllDnsRecords: ${allRecords.length} registros en zona ${zoneId} (${totalPages} páginas)`);
+    return allRecords;
+  }
+
   async createDnsRecord(zoneId, record) {
     try {
       const response = await this.apiClient.post(`/zones/${zoneId}/dns_records`, record);
       return response.data.result;
     } catch (error) {
-      console.error(`Failed to create DNS record in zone ${zoneId}:`, error.message);
-      throw error;
+      if (error.response && error.response.data && error.response.data.errors) {
+        const cfError = JSON.stringify(error.response.data.errors, null, 2);
+        console.error(`[CF 400 ERROR DETALLE]:`, cfError);
+        throw new Error(`CF API Error: ${cfError}`); // Lanzamos el error real al frontend
+      } else {
+        console.error(`[AXIOS ERROR]:`, error.message);
+        throw error;
+      }
     }
   }
 
@@ -307,8 +416,14 @@ class CloudflareApiService {
       const response = await this.apiClient.put(`/zones/${zoneId}/dns_records/${recordId}`, record);
       return response.data.result;
     } catch (error) {
-      console.error(`Failed to update DNS record ${recordId} in zone ${zoneId}:`, error.message);
-      throw error;
+      if (error.response && error.response.data && error.response.data.errors) {
+        const cfError = JSON.stringify(error.response.data.errors, null, 2);
+        console.error(`[CF 400 ERROR DETALLE]:`, cfError);
+        throw new Error(`CF API Error: ${cfError}`); // Lanzamos el error real al frontend
+      } else {
+        console.error(`[AXIOS ERROR]:`, error.message);
+        throw error;
+      }
     }
   }
 
@@ -317,8 +432,14 @@ class CloudflareApiService {
       const response = await this.apiClient.delete(`/zones/${zoneId}/dns_records/${recordId}`);
       return response.data;
     } catch (error) {
-      console.error(`Failed to delete DNS record ${recordId} from zone ${zoneId}:`, error.message);
-      throw error;
+      if (error.response && error.response.data && error.response.data.errors) {
+        const cfError = JSON.stringify(error.response.data.errors, null, 2);
+        console.error(`[CF 400 ERROR DETALLE]:`, cfError);
+        throw new Error(`CF API Error: ${cfError}`); // Lanzamos el error real al frontend
+      } else {
+        console.error(`[AXIOS ERROR]:`, error.message);
+        throw error;
+      }
     }
   }
 

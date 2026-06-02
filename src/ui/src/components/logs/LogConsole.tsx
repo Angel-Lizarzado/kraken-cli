@@ -83,8 +83,9 @@ interface LogRowProps {
   isExpanded: boolean;
   onToggleExpand: (id: string) => void;
   onFix: (entry: LogBufferEntry) => void;
+  onFilterDomain?: (domain: string) => void;
 }
-const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix }: LogRowProps) => {
+const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix, onFilterDomain }: LogRowProps) => {
   const cfg = getLevelConfig(entry.type);
   const modColor = useMemo(() => getModuleColor(entry.module), [entry.module]);
   const time = useMemo(() => {
@@ -93,7 +94,7 @@ const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix }: LogRowProps
   }, [entry.timestamp]);
 
   return (
-    <div style={style}>
+    <div style={{ ...style, overflow: 'hidden', zIndex: isExpanded ? 10 : 1 }}>
       <div
         className="flex items-start gap-2 px-3 py-1.5 cursor-pointer select-none"
         style={{ backgroundColor: isExpanded ? 'oklch(0.22 0.01 250 / 0.5)' : cfg.rowBg, borderBottom: '1px solid oklch(0.18 0.005 250)', minHeight: '28px' }}
@@ -116,7 +117,8 @@ const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix }: LogRowProps
           </button>
         )}
         {entry.domain && (
-          <span className="shrink-0 rounded px-1 py-0.5 text-[9px] font-mono"
+          <span className="shrink-0 rounded px-1 py-0.5 text-[9px] font-mono cursor-pointer hover:opacity-80 transition-opacity"
+            onClick={(e) => { e.stopPropagation(); onFilterDomain?.(entry.domain!); }}
             style={{ backgroundColor: 'oklch(0.3 0.02 260 / 0.4)', color: 'var(--text-muted)' }}>
             {entry.domain}
           </span>
@@ -124,7 +126,17 @@ const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix }: LogRowProps
       </div>
       {isExpanded && entry.message.length > 80 && (
         <div className="px-3 py-2 text-xs leading-relaxed font-mono"
-          style={{ backgroundColor: 'oklch(0 0 0 / 0.4)', color: 'var(--text-secondary)', borderBottom: '1px solid oklch(0.18 0.005 250)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          style={{ 
+            display: 'block',
+            position: 'relative',
+            height: 'calc(100% - 28px)',
+            overflowY: 'auto',
+            backgroundColor: 'var(--bg-default, #111827)', 
+            color: 'var(--text-secondary)', 
+            borderBottom: '1px solid oklch(0.18 0.005 250)', 
+            whiteSpace: 'pre-wrap', 
+            wordBreak: 'break-word' 
+          }}>
           {entry.message}
         </div>
       )}
@@ -261,9 +273,19 @@ export default function LogConsole({
   // 'flat' = vista plana (comportamiento original), 'domain' = agrupada por dominio
   const [viewMode, setViewMode] = useState<'flat' | 'domain'>('flat');
   const [openDomains, setOpenDomains] = useState<Set<string>>(new Set());
+  const [filtroDominio, setFiltroDominio] = useState<string | null>(null);
+
+  // Filtrar logs si hay filtro activo
+  const visibleEntries = useMemo(() => {
+    let filtered = entries;
+    if (filtroDominio) {
+      filtered = filtered.filter(e => e.domain === filtroDominio);
+    }
+    return filtered;
+  }, [entries, filtroDominio]);
 
   // ── Vista agrupada ──────────────────────────────────────────────────────────
-  const domainGroups = useMemo(() => buildDomainGroups(entries), [entries]);
+  const domainGroups = useMemo(() => buildDomainGroups(visibleEntries), [visibleEntries]);
 
   const toggleDomain = useCallback((domain: string) => {
     setOpenDomains(prev => {
@@ -287,7 +309,7 @@ export default function LogConsole({
   // real podía necesitar más. Ahora calculamos aprox. por longitud de mensaje.
   const getItemSize = useCallback(
     (index: number) => {
-      const entry = entries[index];
+      const entry = visibleEntries[index];
       if (!entry) return rowHeight;
       if (expandedIds.has(entry.id) && entry.message.length > 80) {
         // ~12px por línea, ~60 chars por línea → número de líneas estimadas
@@ -296,15 +318,15 @@ export default function LogConsole({
       }
       return rowHeight;
     },
-    [entries, expandedIds, rowHeight],
+    [visibleEntries, expandedIds, rowHeight],
   );
 
   // Remeasure cuando cambia expandedIds
   const prevExpandedRef = useRef<Set<string>>(new Set());
   if (expandedIds !== prevExpandedRef.current) {
     prevExpandedRef.current = expandedIds;
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
+    for (let i = 0; i < visibleEntries.length; i++) {
+      const entry = visibleEntries[i];
       if (!entry) continue;
       const wasExpanded = prevExpandedRef.current.has(entry.id);
       const isExpanded = expandedIds.has(entry.id);
@@ -348,14 +370,15 @@ export default function LogConsole({
           isExpanded={expandedIds.has(entry.id)}
           onToggleExpand={toggleExpand}
           onFix={(e) => onFixAction?.(e)}
+          onFilterDomain={setFiltroDominio}
         />
       );
     },
-    [expandedIds, toggleExpand, onFixAction],
+    [expandedIds, toggleExpand, onFixAction, setFiltroDominio],
   );
 
-  const errorCount   = useMemo(() => entries.filter(e => e.type === 'error').length,   [entries]);
-  const warningCount = useMemo(() => entries.filter(e => e.type === 'warning').length, [entries]);
+  const errorCount   = useMemo(() => visibleEntries.filter(e => e.type === 'error').length,   [visibleEntries]);
+  const warningCount = useMemo(() => visibleEntries.filter(e => e.type === 'warning').length, [visibleEntries]);
 
   return (
     <div className="rounded-lg overflow-hidden"
@@ -367,12 +390,24 @@ export default function LogConsole({
         <div className="flex items-center gap-3">
           <Terminal size={14} style={{ color: 'var(--text-muted)' }} />
           <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Consola</span>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{entries.length} eventos</span>
+          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{visibleEntries.length} eventos</span>
           {errorCount > 0 && <span className="text-[10px]" style={{ color: '#ef4444' }}>{errorCount} errores</span>}
           {warningCount > 0 && <span className="text-[10px]" style={{ color: '#eab308' }}>{warningCount} advertencias</span>}
         </div>
 
         <div className="flex items-center gap-2">
+          {filtroDominio && (
+            <button onClick={() => setFiltroDominio(null)}
+              className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 font-semibold"
+              style={{
+                backgroundColor: 'oklch(0.45 0.18 25 / 0.15)',
+                color: 'var(--color-error)',
+                border: '1px solid oklch(0.45 0.18 25 / 0.3)',
+              }}>
+              <X size={10} /> Quitar Filtro ({filtroDominio})
+            </button>
+          )}
+
           {/* Toggle de vista */}
           <button
             onClick={() => setViewMode(v => v === 'flat' ? 'domain' : 'flat')}
@@ -408,11 +443,11 @@ export default function LogConsole({
       </div>
 
       {/* Cuerpo */}
-      {entries.length === 0 ? (
+      {visibleEntries.length === 0 ? (
         <div className="flex items-center justify-center" style={{ height: `${maxHeight}px`, color: 'var(--text-muted)', fontSize: '12px' }}>
           <div className="text-center">
             <Terminal size={24} className="mx-auto mb-2 opacity-30" />
-            <p>Consola vacía. Los eventos aparecerán aquí durante la ejecución de módulos.</p>
+            <p>{filtroDominio ? `No hay eventos para ${filtroDominio}` : 'Consola vacía. Los eventos aparecerán aquí durante la ejecución de módulos.'}</p>
           </div>
         </div>
       ) : viewMode === 'domain' ? (
@@ -433,14 +468,14 @@ export default function LogConsole({
           <List
             ref={listRef}
             height={maxHeight}
-            itemCount={entries.length}
+            itemCount={visibleEntries.length}
             itemSize={getItemSize}
             width="100%"
             onScroll={handleScroll}
             onItemsRendered={handleItemsRendered}
             overscanCount={10}
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            {...({ children: Row, itemData: entries } as any)}
+            {...({ children: Row, itemData: visibleEntries } as any)}
           />
         </ReactWindowErrorBoundary>
       )}

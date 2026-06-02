@@ -21,6 +21,7 @@ class ExtractionService {
   async extractWordPress(accountName, cloudName, domain, taskId) {
     const startTime = Date.now();
     let sshClient = null;
+    let localTempDomainPath = null;
     let wpConfigExtracted = false;
     let wpConfigModified = false;
 
@@ -88,11 +89,16 @@ class ExtractionService {
         throw new Error(`[SSH] Error de conexión: ${msg}`);
       }
 
-      const domainPath = await this.workspaceManager.createDomainFolder(accountName, cloudName, safeDomain);
-      const logsPath = path.join(domainPath, 'logs');
-      await this.workspaceManager.ensureDirectoryExists(logsPath);
+      // ---- CONFIGURAR RUTAS LOCALES TEMPORALES ----
+      const tempDownloadDir = this.configManager.getTempDownloadPath();
+      localTempDomainPath = path.join(tempDownloadDir, `extract-${Date.now()}-${safeDomain}`);
+      await fsp.mkdir(localTempDomainPath, { recursive: true });
 
-      const localSqlPath = path.join(domainPath, `${safeDomain}.sql`);
+      const localSqlPath = path.join(localTempDomainPath, `${safeDomain}.sql`);
+      const localGzPath = path.join(localTempDomainPath, `${safeDomain}.tar.gz`);
+      
+      const tempLogsPath = path.join(localTempDomainPath, 'logs');
+      await fsp.mkdir(tempLogsPath, { recursive: true });
 
       // ---- 1. DETECTAR RUTA REMOTA ----
       this.emitLog(taskId, domain, 10, `[FS] Detectando ruta de WordPress en Hostinger...`);
@@ -134,121 +140,317 @@ class ExtractionService {
         if (passMatch) dbPass = passMatch[1];
       }
 
-      // ---- 3. COMPRIMIR Y DESCARGAR ARCHIVOS (streaming, gzip) ----
-      this.emitLog(taskId, domain, 30, `Paso 1: Comprimiendo y descargando desde Hostinger (gzip, streaming)...`);
-
-      const localGzPath = path.join(domainPath, `${safeDomain}.tar.gz`);
+      let tempRemotePath = null;
+      let tempFolderName = null;
 
       try {
-        await this.sshService.streamRemoteCompress(
-          sshClient, remotePath, localGzPath,
-          (received, total, pct, msg) => {
-            const mapped = 30 + Math.round(pct * 0.30);
-            this.emitLog(taskId, domain, mapped, msg || `[FS] Descargando... ${pct}%`);
-          }
-        );
-      } catch (downloadError) {
-        try { fsSync.unlinkSync(localGzPath); } catch (_) {}
-        throw downloadError;
-      }
+        const crypto = require('crypto');
+        const token = crypto.randomBytes(5).toString('hex');
+        tempFolderName = `krk_temp_${token}`;
+        tempRemotePath = `${remotePath}/${tempFolderName}`;
 
-      const filesSize = await this.getFileSize(localGzPath);
-      if (filesSize === 0) {
-        try { fsSync.unlinkSync(localGzPath); } catch (_) {}
-        throw new Error(`[ERROR] Archivo descargado vacío: ${localGzPath}`);
-      }
-      // Keep backward compat: set localTarPath to the gz path so .tar references still work
-      const localTarPath = localGzPath;
-
-      // ---- 4. EXPORTAR Y DESCARGAR BASE DE DATOS ----
-      let dbSize = 0;
-      if (dbName) {
-        this.emitLog(taskId, domain, 55, `[DB] Dumpeando ${dbName}...`);
-
-        const sqlName = `${safeDomain}.sql`;
-        const remoteSqlPath = sqlName;
-        const escapedPass = dbPass.replace(/'/g, "'\\''");
-        const dumpCmd = `mysqldump --no-tablespaces --default-character-set=utf8mb4 -u ${dbUser} -p'${escapedPass}' ${dbName} > ${remoteSqlPath}`;
-
-        const dumpResult = await this.execWithTimeout(sshClient, dumpCmd);
-        if (dumpResult.code !== 0 || (dumpResult.stderr && dumpResult.stderr.trim().length > 0)) {
-          throw new Error(`[DB] mysqldump falló: ${dumpResult.stderr || dumpResult.stdout}`);
-        }
-
-        this.emitLog(taskId, domain, 65, `Paso 3: Exportación SQL terminada. Iniciando descarga...`);
-        const sqlDownloadStart = Date.now();
+        // ---- 1.3 LIMPIEZA PREVENTIVA (PRE-FLIGHT) ----
+        this.emitLog(taskId, domain, 18, `[FS] Ejecutando limpieza preventiva en el servidor remoto...`);
         try {
-          await this.sshService.downloadFileWithProgress(
-            sshClient, remoteSqlPath, localSqlPath,
-            (received, total, pct, msg) => {
-              const mapped = 65 + Math.round(pct * 0.15);
-              this.emitLog(taskId, domain, mapped, msg || `[DB] Descargando SQL... ${pct}%`);
+          const preflightCmd = `find "${remotePath}" -maxdepth 1 -name 'krk_temp_*' -type d -exec rm -rf {} +`;
+          await this.execWithTimeout(sshClient, preflightCmd);
+        } catch (preflightErr) {
+          console.warn(`[PRE-FLIGHT-WARNING] No se pudo limpiar carpetas residuales en ${domain}: ${preflightErr.message}`);
+        }
+
+        // ---- 1.5 CONFIGURAR LÍMITES DE MEMORIA REMOTOS ----
+        this.emitLog(taskId, domain, 20, `[FS] Configurando límites de memoria en wp-config.php (remoto)...`);
+        const { performance } = require('node:perf_hooks');
+        const sedStart = performance.now();
+        const sedCmd = `cd "${remotePath}" && sed -i "/WP_MEMORY_LIMIT/d" wp-config.php && sed -i "/WP_MAX_MEMORY_LIMIT/d" wp-config.php && sed -i "/'ABSPATH'/i define('WP_MEMORY_LIMIT', '512M');\\ndefine('WP_MAX_MEMORY_LIMIT', '1024M');" wp-config.php`;
+        
+        let remoteWpConfigSuccess = false;
+        try {
+          const sedResult = await this.execWithTimeout(sshClient, sedCmd);
+          const sedDuration = performance.now() - sedStart;
+          console.log(`[PERFORMANCE] Edición de wp-config.php remota (sed): ${sedDuration.toFixed(2)} ms (Exit Code: ${sedResult.code})`);
+          if (sedResult.code === 0) {
+            remoteWpConfigSuccess = true;
+            wpConfigExtracted = true;
+            wpConfigModified = true;
+            this.emitLog(taskId, domain, 22, `[FS] wp-config.php remoto modificado (sed: ${sedDuration.toFixed(2)} ms)`);
+          } else {
+            console.warn(`[WP-CONFIG-WARN] sed falló con código ${sedResult.code}: ${sedResult.stderr}`);
+          }
+        } catch (sedErr) {
+          console.warn(`[WP-CONFIG-WARN] sed falló: ${sedErr.message}`);
+        }
+
+        this.emitLog(taskId, domain, 25, `[SSH] Creando directorio temporal remoto...`);
+        await this.execWithTimeout(sshClient, `mkdir -p "${tempRemotePath}"`);
+
+        // ---- 3. FASE 2: EMPAQUETADO REMOTO ----
+        this.emitLog(taskId, domain, 30, `Paso 1: Comprimiendo archivos en Hostinger...`);
+        const remoteGzPath = `${tempRemotePath}/${safeDomain}.tar.gz`;
+        const tarCmd = `tar -czf "${remoteGzPath}" -C "${remotePath}" --exclude='krk_temp_*' --exclude='.git*' --exclude='.DS_Store' --exclude='.Trash*' --exclude='.tmp*' --exclude='wp-content/cache/*' --exclude='wp-content/uploads/cache/*' .`;
+        const tarResult = await this.execWithTimeout(sshClient, tarCmd);
+        if (tarResult.code !== 0) {
+          throw new Error(`[TAR] Falló compresión remota: ${tarResult.stderr || tarResult.stdout}`);
+        }
+
+        // ---- 4. BASE DE DATOS DUMP ----
+        let remoteSqlPath = null;
+        if (dbName) {
+          this.emitLog(taskId, domain, 50, `[DB] Dumpeando base de datos ${dbName}...`);
+          remoteSqlPath = `${tempRemotePath}/${safeDomain}.sql`;
+          const escapedPass = dbPass.replace(/'/g, "'\\''");
+          const dumpCmd = `mysqldump --no-tablespaces --default-character-set=utf8mb4 -u ${dbUser} -p'${escapedPass}' ${dbName} > "${remoteSqlPath}"`;
+          const dumpResult = await this.execWithTimeout(sshClient, dumpCmd);
+          if (dumpResult.code !== 0 || (dumpResult.stderr && dumpResult.stderr.trim().length > 0)) {
+            throw new Error(`[DB] mysqldump falló: ${dumpResult.stderr || dumpResult.stdout}`);
+          }
+        }
+
+        // ---- 5. FASE 3: EXTRACCIÓN DE ALTA VELOCIDAD (HTTP) ----
+        this.emitLog(taskId, domain, 60, `Paso 2: Iniciando descargas de alta velocidad vía HTTP...`);
+        
+        // Descargar Tarball
+        const tarUrl = `https://${domain}/${tempFolderName}/${safeDomain}.tar.gz`;
+        const maxAttempts = 3;
+        let tarDownloadSuccess = false;
+        let tarAttempts = 0;
+
+        while (!tarDownloadSuccess && tarAttempts < maxAttempts) {
+          try {
+            await this.downloadFileViaHttp(tarUrl, localGzPath, (received, total, pct, msg) => {
+              const mapped = 60 + Math.round(pct * 0.20);
+              this.emitLog(taskId, domain, mapped, msg || `[FS] Descargando archivos... ${pct}%`, { consoleThrottleKey: `download-${localGzPath}` });
+            });
+            tarDownloadSuccess = true;
+          } catch (downloadError) {
+            tarAttempts++;
+            if (tarAttempts < maxAttempts) {
+              console.warn(`[DOWNLOAD-RETRY] Intento de descarga de archivos ${tarAttempts}/${maxAttempts} falló para ${domain}. Reintentando HTTP en 10s...`);
+              this.emitLog(taskId, domain, 60, `[WARNING] Descarga falló (Intento ${tarAttempts}/${maxAttempts}). Reintentando en 10s...`);
+              
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              
+              // Asegurarse de que el comando de compresión remota se lanzó correctamente
+              this.emitLog(taskId, domain, 60, `[SSH] Verificando integridad del archivo remoto comprimido...`);
+              const testFileCmd = `test -f "${remoteGzPath}" && du -b "${remoteGzPath}" | cut -f1 || echo "NOT_FOUND"`;
+              try {
+                const fileCheckResult = await this.execWithTimeout(sshClient, testFileCmd);
+                const output = (fileCheckResult.stdout || '').trim();
+                
+                if (output === 'NOT_FOUND' || parseInt(output, 10) === 0) {
+                  console.warn(`[DOWNLOAD-RETRY] Archivo comprimido remoto no encontrado o vacío. Volviendo a comprimir...`);
+                  this.emitLog(taskId, domain, 30, `[SSH] Regenerando archivo comprimido en Hostinger...`);
+                  const retryTarResult = await this.execWithTimeout(sshClient, tarCmd);
+                  if (retryTarResult.code !== 0) {
+                    throw new Error(`[TAR] Falló la compresión remota en reintento: ${retryTarResult.stderr || retryTarResult.stdout}`);
+                  }
+                } else {
+                  console.log(`[DOWNLOAD-RETRY] Archivo comprimido remoto verificado con éxito (${(parseInt(output, 10) / 1024 / 1024).toFixed(2)} MB).`);
+                }
+              } catch (checkErr) {
+                console.warn(`[DOWNLOAD-RETRY] Error verificando/regenerando archivo remoto: ${checkErr.message}. Intentando relanzar compresión...`);
+                await this.execWithTimeout(sshClient, tarCmd).catch(() => {});
+              }
+            } else {
+              // Ha fallado 3 veces. Cambiamos a SFTP.
+              console.log(`[DOWNLOAD-SFTP-FALLBACK] HTTP falló 3 veces. Cambiando a canal seguro SFTP/SCP para ${domain}...`);
+              this.emitLog(taskId, domain, 60, `[SFTP] Canal HTTP bloqueado o fallido. Iniciando transferencia segura por túnel SFTP...`);
+              
+              try {
+                await this.downloadFileViaSftp(sshClient, remoteGzPath, localGzPath, (received, total, pct, msg) => {
+                  const mapped = 60 + Math.round(pct * 0.20);
+                  this.emitLog(taskId, domain, mapped, msg || `[SFTP] Descargando archivos... ${pct}%`, { consoleThrottleKey: `download-${localGzPath}` });
+                });
+                tarDownloadSuccess = true;
+              } catch (sftpError) {
+                try { fsSync.unlinkSync(localGzPath); } catch (_) {}
+                throw new Error(`Error en descarga SFTP tras fallo HTTP: ${sftpError.message}`);
+              }
             }
-          );
-        } catch (downloadError) {
-          try { fsSync.unlinkSync(localSqlPath); } catch (_) {}
-          throw downloadError;
-        }
-        const sqlDownloadEnd = Date.now();
-        const sqlDownloadTime = (sqlDownloadEnd - sqlDownloadStart) / 1000;
-        dbSize = await this.getFileSize(localSqlPath);
-        if (dbSize === 0) {
-          try { fsSync.unlinkSync(localSqlPath); } catch (_) {}
-          throw new Error(`[ERROR] SQL descargado vacío: ${localSqlPath}`);
+          }
         }
 
-        await this.execWithTimeout(sshClient, `rm -f ${remoteSqlPath}`);
+        const filesSize = await this.getFileSize(localGzPath);
+        if (filesSize === 0) {
+          try { fsSync.unlinkSync(localGzPath); } catch (_) {}
+          throw new Error(`[ERROR] Archivo descargado vacío: ${localGzPath}`);
+        }
+        const localTarPath = localGzPath;
+
+        // Descargar SQL
+        let dbSize = 0;
+        if (dbName && remoteSqlPath) {
+          this.emitLog(taskId, domain, 80, `Paso 3: Descargando base de datos por HTTP...`);
+          const sqlUrl = `https://${domain}/${tempFolderName}/${safeDomain}.sql`;
+          let sqlDownloadSuccess = false;
+          let sqlAttempts = 0;
+
+          while (!sqlDownloadSuccess && sqlAttempts < maxAttempts) {
+            try {
+              await this.downloadFileViaHttp(sqlUrl, localSqlPath, (received, total, pct, msg) => {
+                const mapped = 80 + Math.round(pct * 0.10);
+                this.emitLog(taskId, domain, mapped, msg || `[DB] Descargando base de datos... ${pct}%`, { consoleThrottleKey: `download-${localSqlPath}` });
+              });
+              sqlDownloadSuccess = true;
+            } catch (downloadError) {
+              sqlAttempts++;
+              if (sqlAttempts < maxAttempts) {
+                console.warn(`[DOWNLOAD-RETRY] Intento de descarga de BD ${sqlAttempts}/${maxAttempts} falló para ${domain}. Reintentando HTTP en 10s...`);
+                this.emitLog(taskId, domain, 80, `[WARNING] Descarga de BD falló (Intento ${sqlAttempts}/${maxAttempts}). Reintentando en 10s...`);
+                
+                await new Promise(resolve => setTimeout(resolve, 10000));
+                
+                // Asegurarse de que el archivo SQL remoto exista y no esté vacío
+                this.emitLog(taskId, domain, 80, `[SSH] Verificando integridad del volcado SQL remoto...`);
+                const testSqlCmd = `test -f "${remoteSqlPath}" && du -b "${remoteSqlPath}" | cut -f1 || echo "NOT_FOUND"`;
+                try {
+                  const sqlCheckResult = await this.execWithTimeout(sshClient, testSqlCmd);
+                  const output = (sqlCheckResult.stdout || '').trim();
+                  
+                  if (output === 'NOT_FOUND' || parseInt(output, 10) === 0) {
+                    console.warn(`[DOWNLOAD-RETRY] Volcado SQL remoto no encontrado o vacío. Regenerando mysqldump...`);
+                    this.emitLog(taskId, domain, 50, `[DB] Volviendo a exportar la base de datos...`);
+                    const escapedPass = dbPass.replace(/'/g, "'\\''");
+                    const dumpCmd = `mysqldump --no-tablespaces --default-character-set=utf8mb4 -u ${dbUser} -p'${escapedPass}' ${dbName} > "${remoteSqlPath}"`;
+                    const dumpResult = await this.execWithTimeout(sshClient, dumpCmd);
+                    if (dumpResult.code !== 0) {
+                      throw new Error(`[DB] mysqldump falló en reintento: ${dumpResult.stderr || dumpResult.stdout}`);
+                    }
+                  } else {
+                    console.log(`[DOWNLOAD-RETRY] Volcado SQL remoto verificado con éxito (${(parseInt(output, 10) / 1024 / 1024).toFixed(2)} MB).`);
+                  }
+                } catch (checkErr) {
+                  console.warn(`[DOWNLOAD-RETRY] Error verificando/regenerando SQL remoto: ${checkErr.message}.`);
+                }
+              } else {
+                // Ha fallado 3 veces. Cambiamos a SFTP.
+                console.log(`[DOWNLOAD-SFTP-FALLBACK] HTTP de SQL falló 3 veces. Cambiando a canal seguro SFTP/SCP para ${domain}...`);
+                this.emitLog(taskId, domain, 80, `[SFTP] Canal HTTP bloqueado o fallido. Iniciando transferencia de base de datos por SFTP...`);
+                
+                try {
+                  await this.downloadFileViaSftp(sshClient, remoteSqlPath, localSqlPath, (received, total, pct, msg) => {
+                    const mapped = 80 + Math.round(pct * 0.10);
+                    this.emitLog(taskId, domain, mapped, msg || `[SFTP] Descargando base de datos... ${pct}%`, { consoleThrottleKey: `download-${localSqlPath}` });
+                  });
+                  sqlDownloadSuccess = true;
+                } catch (sftpError) {
+                  try { fsSync.unlinkSync(localSqlPath); } catch (_) {}
+                  throw new Error(`Error en descarga SFTP de base de datos tras fallo HTTP: ${sftpError.message}`);
+                }
+              }
+            }
+          }
+
+          dbSize = await this.getFileSize(localSqlPath);
+          if (dbSize === 0) {
+            try { fsSync.unlinkSync(localSqlPath); } catch (_) {}
+            throw new Error(`[ERROR] SQL descargado vacío: ${localSqlPath}`);
+          }
+        }
+
+        // ---- 5. POST-PROCESADO: MEMORIA WP (local tar.gz) ----
+        this.emitLog(taskId, domain, 90, `[FS] Procesando wp-config.php (límites de memoria)...`);
+        try {
+          const { performance } = require('node:perf_hooks');
+          const localInjectStart = performance.now();
+          const modified = await this.injectMemoryLimitsFromTar(localTarPath, localTempDomainPath, configContent);
+          const localInjectDuration = performance.now() - localInjectStart;
+          console.log(`[PERFORMANCE] Edición e inyección local de wp-config.php: ${localInjectDuration.toFixed(2)} ms`);
+          if (modified) {
+            wpConfigExtracted = true;
+            wpConfigModified = true;
+            this.emitLog(taskId, domain, 92, `[FS] wp-config.php local guardado — memory_limit: 512M/1024M (${localInjectDuration.toFixed(2)} ms)`);
+          }
+        } catch (e) {
+          this.emitLog(taskId, domain, 92, `[FS] No se pudo modificar wp-config.php localmente: ${e.message}`);
+        }
+
+        // ---- 5.5 MOVER CARPETA COMPLETA AL ALMACENAMIENTO DE DESTINO ----
+        this.emitLog(taskId, domain, 95, `[FS] Trasladando respaldos al almacenamiento de destino...`);
+        const finalDomainPath = await this.workspaceManager.createDomainFolder(accountName, cloudName, safeDomain);
+        
+        // Mover los archivos de la carpeta temporal local a la carpeta de destino
+        const tempFiles = await fsp.readdir(localTempDomainPath);
+        for (const file of tempFiles) {
+          const srcFile = path.join(localTempDomainPath, file);
+          const destFile = path.join(finalDomainPath, file);
+          if (file === 'logs') {
+            // Mover logs
+            const finalLogsPath = path.join(finalDomainPath, 'logs');
+            await this.workspaceManager.ensureDirectoryExists(finalLogsPath);
+            const logFiles = await fsp.readdir(srcFile);
+            for (const logFile of logFiles) {
+              await this.moveFileToDestination(path.join(srcFile, logFile), path.join(finalLogsPath, logFile), () => {
+                // Progreso silencioso para logs pequeños
+              });
+            }
+          } else {
+            await this.moveFileToDestination(srcFile, destFile, (moved, total, pct, msg) => {
+              // Reportar progreso del traslado de archivos grandes a la UI
+              const mapped = 95 + Math.round(pct * 0.04);
+              this.emitLog(taskId, domain, mapped, msg, { consoleThrottleKey: `move-${destFile}` });
+            });
+          }
+        }
+
+        // ---- 6. REGISTRO Y MÉTRICAS ----
+        const totalSize = filesSize + dbSize;
+        await this.workspaceManager.updateDominiosProcesados(accountName, cloudName, [domain]);
+
+        const endTime = Date.now();
+        const duration = (endTime - startTime) / 1000;
+        const avgSpeed = totalSize > 0 ? (totalSize / duration / 1024 / 1024).toFixed(2) : 0;
+
+        this.emitLog(taskId, domain, 100,
+          `[ÉXITO] Extracción completada. Total: ${(totalSize / 1024 / 1024).toFixed(2)} MB, Velocidad: ${avgSpeed} MB/s`
+        );
+
+        return {
+          success: true,
+          accountName,
+          cloudName,
+          domain,
+          filesPath: path.join(finalDomainPath, `${safeDomain}.tar.gz`),
+          dbPath: dbName && remoteSqlPath ? path.join(finalDomainPath, `${safeDomain}.sql`) : null,
+          filesSize,
+          dbSize,
+          totalSize,
+          duration,
+          avgSpeed,
+          wpConfigExtracted,
+          wpConfigModified,
+          wpConfigPath: wpConfigExtracted ? path.join(finalDomainPath, 'wp-config.php') : null,
+          metrics: {
+            filesSizeMB: (filesSize / 1024 / 1024).toFixed(2),
+            dbSizeMB: (dbSize / 1024 / 1024).toFixed(2),
+            totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
+            durationSeconds: duration.toFixed(2),
+            speedMBps: avgSpeed
+          }
+        };
+
+      } finally {
+        // ---- FASE 5: LIMPIEZA CRÍTICA (Fail-Safe) ----
+        if (sshClient && tempRemotePath) {
+          try {
+            console.log(`[CLEANUP] Eliminando directorio temporal remoto: ${tempRemotePath}`);
+            await this.execWithTimeout(sshClient, `rm -rf "${tempRemotePath}"`);
+          } catch (cleanupError) {
+            const errorMsg = `[BASURA RESIDUAL] No se pudo eliminar la carpeta temporal ${tempRemotePath} en ${domain}: ${cleanupError.message}`;
+            console.error(errorMsg);
+            this.emitLog(taskId, domain, 99, `[CLEANUP-ERROR] ${errorMsg}`);
+            try {
+              const finalDomainPath = this.workspaceManager.getDomainPath(accountName, cloudName, safeDomain);
+              const finalLogsPath = path.join(finalDomainPath, 'logs');
+              await this.workspaceManager.ensureDirectoryExists(finalLogsPath);
+              const logFile = path.join(finalLogsPath, 'cleanup_errors.log');
+              fsSync.appendFileSync(logFile, `[${new Date().toISOString()}] ${errorMsg}\n`, 'utf8');
+            } catch (fsLogErr) {
+              console.error(`[FS-LOG-ERROR] No se pudo escribir log de limpieza local: ${fsLogErr.message}`);
+            }
+          }
+        }
       }
-
-      // ---- 5. POST-PROCESADO: MEMORIA WP (local tar.gz) ----
-      this.emitLog(taskId, domain, 80, `[FS] Procesando wp-config.php (límites de memoria)...`);
-
-      try {
-        const modified = await this.injectMemoryLimitsFromTar(localTarPath, domainPath);
-        if (modified) {
-          wpConfigExtracted = true;
-          wpConfigModified = true;
-          this.emitLog(taskId, domain, 82, `[FS] wp-config.php modificado — memory_limit: 512M/1024M`);
-        }
-      } catch (e) {
-        this.emitLog(taskId, domain, 82, `[FS] No se pudo modificar wp-config.php: ${e.message}`);
-      }
-
-      // ---- 6. REGISTRO Y MÉTRICAS ----
-      const totalSize = filesSize + dbSize;
-      await this.workspaceManager.updateDominiosProcesados(accountName, cloudName, [domain]);
-
-      const endTime = Date.now();
-      const duration = (endTime - startTime) / 1000;
-      const avgSpeed = totalSize > 0 ? (totalSize / duration / 1024 / 1024).toFixed(2) : 0;
-
-      this.emitLog(taskId, domain, 100,
-        `[ÉXITO] Extracción completada. Total: ${(totalSize / 1024 / 1024).toFixed(2)} MB, Velocidad: ${avgSpeed} MB/s`
-      );
-
-      return {
-        success: true,
-        accountName,
-        cloudName,
-        domain,
-        filesPath: localTarPath,
-        dbPath: localSqlPath,
-        filesSize,
-        dbSize,
-        totalSize,
-        duration,
-        avgSpeed,
-        wpConfigExtracted,
-        wpConfigModified,
-        wpConfigPath: wpConfigExtracted ? path.join(domainPath, 'wp-config.php') : null,
-        metrics: {
-          filesSizeMB: (filesSize / 1024 / 1024).toFixed(2),
-          dbSizeMB: (dbSize / 1024 / 1024).toFixed(2),
-          totalSizeMB: (totalSize / 1024 / 1024).toFixed(2),
-          durationSeconds: duration.toFixed(2),
-          speedMBps: avgSpeed
-        }
-      };
 
     } catch (error) {
       this.progressEmitter.emitProgress({
@@ -262,6 +464,15 @@ class ExtractionService {
     } finally {
       if (sshClient) {
         try { sshClient.end(); } catch (e) { /* ignore */ }
+      }
+      // Limpiar directorio temporal local en el almacenamiento temporal
+      if (localTempDomainPath) {
+        try {
+          const fsSync = require('fs');
+          if (fsSync.existsSync(localTempDomainPath)) {
+            fsSync.rmSync(localTempDomainPath, { recursive: true, force: true });
+          }
+        } catch (_) {}
       }
     }
   }
@@ -401,104 +612,50 @@ class ExtractionService {
   }
 
   /**
-   * Inject memory limits into wp-config.php inside a tar archive (gzip or plain).
-   * @param {string} localTarPath - Path to the .tar or .tar.gz file
-   * @param {string} domainPath - Domain output directory
-   * @returns {Promise<boolean>} true if wp-config.php was found and modified
+   * Inject memory limits into wp-config.php locally.
+   * Bypasses local tar extraction/compression to avoid PCIe bus starvation.
+   * @param {string} localTarPath - Path to the local .tar.gz (kept for compatibility)
+   * @param {string} domainPath - Destination folder to write the local wp-config.php
+   * @param {string} configContent - Original content of wp-config.php
+   * @returns {Promise<boolean>} true if wp-config.php was modified and written successfully
    */
-  async injectMemoryLimitsFromTar(localTarPath, domainPath) {
-    const fs = require('fs');
-    const tar = require('tar');
-    const os = require('os');
-    const path = require('path');
-
-    const isGz = localTarPath.endsWith('.tar.gz');
-    const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wp-memory-'));
+  async injectMemoryLimitsFromTar(localTarPath, domainPath, configContent) {
+    if (!configContent) {
+      console.warn('[WP-CONFIG] No se recibió el contenido original para procesar localmente.');
+      return false;
+    }
 
     try {
-      await tar.x({
-        file: localTarPath,
-        cwd: extractDir,
-        gzip: isGz
-      });
-
-      // Find wp-config.php in extracted files
-      const wpConfigPath = this.findFileRecursive(extractDir, 'wp-config.php');
-      if (!wpConfigPath) {
-        return false; // Not found, nothing to inject
-      }
-
-      const wpContent = fs.readFileSync(wpConfigPath, 'utf8');
-
-      // Calculate current memory limits
-      const currentMemory = (wpContent.match(/define\s*\(\s*['"]WP_MEMORY_LIMIT['"]\s*,\s*['"](\d+[MG])['"]\s*\)/) || [])[1];
-      const currentMaxMemory = (wpContent.match(/define\s*\(\s*['"]WP_MAX_MEMORY_LIMIT['"]\s*,\s*['"](\d+[MG])['"]\s*\)/) || [])[1];
-
-      // Only inject if less than 512M
-      const needsMemory = !currentMemory || this.parseMemoryLimit(currentMemory) < 512;
-      const needsMaxMemory = !currentMaxMemory || this.parseMemoryLimit(currentMaxMemory) < 1024;
-
-      if (!needsMemory && !needsMaxMemory) {
-        return false; // Already sufficient
-      }
-
-      // Inject BEFORE the "/* That's all, stop editing!" line
       const stopMarker = "/* That's all, stop editing!";
-      const stopIndex = wpContent.indexOf(stopMarker);
-      if (stopIndex === -1) {
-        return false;
+      let localWpConfigContent = configContent;
+
+      // Limpiamos los límites de memoria existentes si los hubiera para evitar duplicados
+      localWpConfigContent = localWpConfigContent.replace(/define\s*\(\s*['"]WP_MEMORY_LIMIT['"]\s*,\s*[^)]+\)\s*;?/g, '');
+      localWpConfigContent = localWpConfigContent.replace(/define\s*\(\s*['"]WP_MAX_MEMORY_LIMIT['"]\s*,\s*[^)]+\)\s*;?/g, '');
+
+      let stopIdx = localWpConfigContent.indexOf(stopMarker);
+      if (stopIdx === -1) {
+        // Fallback al ABSPATH si no se encuentra el stopMarker estándar de WP
+        const abspathMarker = "if ( ! defined( 'ABSPATH' ) )";
+        stopIdx = localWpConfigContent.indexOf(abspathMarker);
       }
 
-      let injections = '';
-      if (needsMemory) {
-        injections += `define('WP_MEMORY_LIMIT', '512M');\n`;
+      if (stopIdx !== -1) {
+        localWpConfigContent = localWpConfigContent.slice(0, stopIdx) + 
+          `define('WP_MEMORY_LIMIT', '512M');\ndefine('WP_MAX_MEMORY_LIMIT', '1024M');\n\n` + 
+          localWpConfigContent.slice(stopIdx);
+      } else {
+        // Fallback final: al final del archivo
+        localWpConfigContent += `\ndefine('WP_MEMORY_LIMIT', '512M');\ndefine('WP_MAX_MEMORY_LIMIT', '1024M');\n`;
       }
-      if (needsMaxMemory) {
-        injections += `define('WP_MAX_MEMORY_LIMIT', '1024M');\n`;
-      }
 
-      const modifiedContent = wpContent.slice(0, stopIndex) + injections + '\n' + wpContent.slice(stopIndex);
-      fs.writeFileSync(wpConfigPath, modifiedContent, 'utf8');
-
-      // Re-pack the archive
-      // Remove old archive, re-create with modified wp-config.php
-      fs.unlinkSync(localTarPath);
-
-      await tar.c({
-        file: localTarPath,
-        cwd: extractDir,
-        gzip: isGz
-      }, ['.']);
-
+      const localWpConfigPath = path.join(domainPath, 'wp-config.php');
+      await fsp.writeFile(localWpConfigPath, localWpConfigContent, 'utf8');
       return true;
     } catch (error) {
-      console.error(`[TAR] Error modificando wp-config.php: ${error.message}`);
+      console.error(`[WP-CONFIG] Error al escribir wp-config.php local: ${error.message}`);
       return false;
-    } finally {
-      try {
-        fs.rmSync(extractDir, { recursive: true });
-      } catch (_) {}
     }
-  }
-
-  /**
-   * Recursively find a file in a directory tree.
-   */
-  findFileRecursive(dir, filename) {
-    const fs = require('fs');
-    const path = require('path');
-
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        const found = this.findFileRecursive(fullPath, filename);
-        if (found) return found;
-      } else if (entry.name === filename) {
-        return fullPath;
-      }
-    }
-    return null;
   }
 
   /**
@@ -525,9 +682,9 @@ class ExtractionService {
     }
   }
 
-  emitLog(taskId, domain, progress, message) {
+  emitLog(taskId, domain, progress, message, options = {}) {
     process.nextTick(() => {
-      this.progressEmitter.emitProgress(taskId, progress, message);
+      this.progressEmitter.emitProgress(taskId, progress, message, options);
     });
   }
 
@@ -578,6 +735,181 @@ class ExtractionService {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  async downloadFileViaHttp(url, localPath, onProgress) {
+    const axios = require('axios');
+    const https = require('https');
+    const fs = require('fs');
+    const stream = require('stream');
+    const { pipeline } = require('stream/promises');
+
+    const agent = new https.Agent({ rejectUnauthorized: false });
+    
+    // Obtener el directorio temporal en el almacenamiento local
+    const tempDir = this.configManager.getTempDownloadPath();
+    await fsp.mkdir(tempDir, { recursive: true });
+    
+    const filename = path.basename(localPath);
+    const tempFilePath = path.join(tempDir, `download-${Date.now()}-${filename}`);
+
+    let response;
+    try {
+      response = await axios({
+        method: 'get',
+        url,
+        responseType: 'stream',
+        httpsAgent: agent,
+        timeout: 300000 // 5 minutos de timeout
+      });
+    } catch (err) {
+      if (url.startsWith('https://')) {
+        const httpUrl = url.replace('https://', 'http://');
+        console.warn(`[HTTP-BYPASS] Falló HTTPS, reintentando con HTTP: ${httpUrl}`);
+        response = await axios({
+          method: 'get',
+          url: httpUrl,
+          responseType: 'stream',
+          timeout: 300000
+        });
+      } else {
+        throw err;
+      }
+    }
+
+    if (response.status >= 400) {
+      throw new Error(`HTTP Error ${response.status}: ${response.statusText}`);
+    }
+
+    const totalBytes = parseInt(response.headers['content-length'], 10) || 0;
+    let receivedBytes = 0;
+    const startTime = Date.now();
+    let lastEmit = 0;
+
+    const progressTracker = new stream.Transform({
+      transform(chunk, _encoding, callback) {
+        receivedBytes += chunk.length;
+        const now = Date.now();
+        if (now - lastEmit >= 500) {
+          lastEmit = now;
+          const pct = totalBytes > 0 ? Math.round((receivedBytes / totalBytes) * 100) : 0;
+          const elapsed = (now - startTime) / 1000;
+          const transferredMb = receivedBytes / 1024 / 1024;
+          const totalMb = totalBytes / 1024 / 1024;
+          const speed = elapsed > 0 ? (transferredMb / elapsed) : 0;
+          const msg = totalBytes > 0
+            ? `Descargando: ${transferredMb.toFixed(2)} MB / ${totalMb.toFixed(2)} MB (${speed.toFixed(2)} MB/s)`
+            : `Descargando: ${transferredMb.toFixed(2)} MB (${speed.toFixed(2)} MB/s)`;
+          if (onProgress) {
+            onProgress(receivedBytes, totalBytes, pct, msg);
+          }
+        }
+        callback(null, chunk);
+      }
+    });
+
+    const writer = fs.createWriteStream(tempFilePath);
+
+    try {
+      // stream.pipeline maneja backpressure y cleanup automáticamente
+      await pipeline(response.data, progressTracker, writer);
+      
+      // Mover el archivo descargado desde la carpeta temporal de staging a la ruta intermedia local
+      await this.moveFileToDestination(tempFilePath, localPath, onProgress);
+    } catch (err) {
+      // Limpieza del archivo temporal ante fallos
+      try {
+        if (fsSync.existsSync(tempFilePath)) {
+          fsSync.unlinkSync(tempFilePath);
+        }
+      } catch (_) {}
+      throw err;
+    }
+  }
+
+  /**
+   * Descarga un archivo directamente usando SFTP sobre el túnel SSH establecido,
+   * con soporte de progreso en tiempo real y alta velocidad multicanal.
+   */
+  async downloadFileViaSftp(sshClient, remotePath, localPath, onProgress) {
+    return this.sshService.downloadFileWithProgress(sshClient, remotePath, localPath, onProgress);
+  }
+
+  /**
+   * Mueve un archivo desde el almacenamiento local temporal al destino final.
+   * Usa rename() nativo si es el mismo volumen. Si detecta EXDEV (volúmenes distintos),
+   * realiza la copia física secuencial utilizando pipeline de streams y reporta progreso en tiempo real.
+   */
+  async moveFileToDestination(tempPath, destPath, onProgress) {
+    const fs = require('fs');
+    const fsp = require('fs').promises;
+    const stream = require('stream');
+    const { pipeline } = require('stream/promises');
+
+    await fsp.mkdir(path.dirname(destPath), { recursive: true });
+
+    try {
+      // Intentar rename atómico nativo primero
+      await fsp.rename(tempPath, destPath);
+      return;
+    } catch (renameError) {
+      if (renameError.code !== 'EXDEV') {
+        throw renameError;
+      }
+      console.log(`[FS-MOVE] Enlace entre volúmenes detectado (EXDEV). Iniciando traslado mediante copia: ${tempPath} -> ${destPath}`);
+    }
+
+    // Fallback: copia con pipeline de streams y reporte de progreso
+    const stat = await fsp.stat(tempPath);
+    const totalBytes = stat.size;
+    let movedBytes = 0;
+    const startTime = Date.now();
+    let lastEmit = 0;
+
+    const readStream = fs.createReadStream(tempPath);
+    const writeStream = fs.createWriteStream(destPath);
+
+    const progressTracker = new stream.Transform({
+      transform(chunk, _encoding, callback) {
+        movedBytes += chunk.length;
+        const now = Date.now();
+        if (now - lastEmit >= 500) {
+          lastEmit = now;
+          const pct = totalBytes > 0 ? Math.round((movedBytes / totalBytes) * 100) : 0;
+          const elapsed = (now - startTime) / 1000;
+          const transferredMb = movedBytes / 1024 / 1024;
+          const totalMb = totalBytes / 1024 / 1024;
+          const speed = elapsed > 0 ? (transferredMb / elapsed) : 0;
+          const msg = totalBytes > 0
+            ? `Trasladando al almacenamiento de destino: ${transferredMb.toFixed(2)} MB / ${totalMb.toFixed(2)} MB (${speed.toFixed(2)} MB/s)`
+            : `Trasladando al almacenamiento de destino: ${transferredMb.toFixed(2)} MB (${speed.toFixed(2)} MB/s)`;
+          
+          if (onProgress) {
+            onProgress(movedBytes, totalBytes, pct, msg);
+          }
+        }
+        callback(null, chunk);
+      }
+    });
+
+    try {
+      await pipeline(readStream, progressTracker, writeStream);
+    } catch (copyErr) {
+      // Limpieza de destino parcial si falla la copia
+      try {
+        if (fsSync.existsSync(destPath)) {
+          fsSync.unlinkSync(destPath);
+        }
+      } catch (_) {}
+      throw copyErr;
+    }
+
+    // Limpieza de temporal de staging
+    try {
+      await fsp.unlink(tempPath);
+    } catch (cleanupErr) {
+      console.warn(`[TRASLADO-WARNING] No se pudo eliminar el archivo temporal de staging: ${cleanupErr.message}`);
     }
   }
 }

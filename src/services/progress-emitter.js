@@ -10,6 +10,7 @@ class ProgressEmitter extends EventEmitter {
     this._throttleWindow = 1000; // 1 segundo
     this._throttleMax = 5;      // máx mensajes por ventana
     this._throttleQueue = [];   // timestamps de eventos enviados
+    this._consoleThrottleMap = new Map(); // Para limitar logs de consola
   }
 
   /**
@@ -48,33 +49,46 @@ class ProgressEmitter extends EventEmitter {
     return taskId;
   }
 
-  emitProgress(taskId, progress, message) {
-    const taskInfo = this.tasks.get(taskId);
+  emitProgress(taskId, progress, message, options = {}) {
+    let actualTaskId = taskId;
+    let actualProgress = progress;
+    let actualMessage = message;
+    let actualOptions = options;
+
+    // Soportar desestructuración si el primer parámetro es un objeto
+    if (taskId && typeof taskId === 'object') {
+      actualTaskId = taskId.taskId;
+      actualProgress = taskId.progress;
+      actualMessage = taskId.message || taskId.currentMessage;
+      actualOptions = taskId.options || {};
+    }
+
+    const taskInfo = this.tasks.get(actualTaskId);
     if (!taskInfo) {
-      console.warn(`Task ${taskId} not found`);
+      console.warn(`Task ${actualTaskId} not found`);
       return;
     }
     
     // Ensure progress is between 0 and 100
-    const clampedProgress = Math.max(0, Math.min(100, progress));
+    const clampedProgress = Math.max(0, Math.min(100, actualProgress));
     
     // Update task info
     taskInfo.progress = clampedProgress;
-    taskInfo.message = message;
+    taskInfo.message = actualMessage;
     taskInfo.lastUpdate = Date.now();
     
     // Emit progress event (con throttle para no saturar IPC)
     const progressEvent = {
-      taskId,
+      taskId: actualTaskId,
       module: taskInfo.module,
       domain: taskInfo.domain,
       progress: clampedProgress,
-      message,
+      message: actualMessage,
       timestamp: Date.now()
     };
     
     // Siempre emitimos eventos específicos (task y módulo) porque no son muchos
-    this.emit(`progress:${taskId}`, progressEvent);
+    this.emit(`progress:${actualTaskId}`, progressEvent);
     this.emit(`progress:${taskInfo.module}`, progressEvent);
     
     // Evento genérico 'progress' va con throttle — es el que viaja por IPC al frontend
@@ -82,7 +96,23 @@ class ProgressEmitter extends EventEmitter {
       this.emit('progress', progressEvent);
     }
     
-    console.log(`Progress: ${taskInfo.module} - ${taskInfo.domain} - ${clampedProgress}% - ${message}`);
+    // Control de throttling para console.log de progreso
+    let shouldLog = true;
+    if (actualOptions && actualOptions.consoleThrottleKey) {
+      const key = actualOptions.consoleThrottleKey;
+      const throttleMs = actualOptions.consoleThrottleMs || 1000;
+      const now = Date.now();
+      const lastLog = this._consoleThrottleMap.get(key) || 0;
+      if (now - lastLog < throttleMs) {
+        shouldLog = false;
+      } else {
+        this._consoleThrottleMap.set(key, now);
+      }
+    }
+
+    if (shouldLog) {
+      console.log(`Progress: ${taskInfo.module} - ${taskInfo.domain} - ${clampedProgress}% - ${actualMessage}`);
+    }
   }
 
   emitError(taskId, error, fatal = false) {

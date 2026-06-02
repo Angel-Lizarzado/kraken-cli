@@ -34,6 +34,7 @@ declare global {
   interface Window {
     api: IpcApi;
     electronAPI?: ElectronApi;
+    krakenAPI: any;
   }
 }
 

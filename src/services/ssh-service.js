@@ -275,7 +275,10 @@ class SshService {
           stderr += data.toString();
         });
         
+        let timeoutTimer = null;
+
         stream.on('close', (code, signal) => {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
           resolve({
             stdout: stdout.trim(),
             stderr: stderr.trim(),
@@ -283,6 +286,13 @@ class SshService {
             signal: signal
           });
         });
+
+        if (options.timeoutMs) {
+          timeoutTimer = setTimeout(() => {
+            stream.close();
+            reject(new Error(`Command timed out after ${options.timeoutMs}ms: ${command.substring(0, 50)}...`));
+          }, options.timeoutMs);
+        }
         
         stream.on('error', (err) => {
           reject(err);
@@ -412,8 +422,8 @@ class SshService {
           fs.mkdirSync(localDir, { recursive: true });
         }
         
-        const readStream = sftp.createReadStream(remotePath);
-        const writeStream = fs.createWriteStream(localPath);
+        const readStream = sftp.createReadStream(remotePath, { highWaterMark: 1048576 });
+        const writeStream = fs.createWriteStream(localPath, { highWaterMark: 1048576 });
         
         writeStream.on('close', () => {
           sftp.end();
@@ -504,8 +514,9 @@ class SshService {
         resetWatchdog();
 
         sftp.fastGet(remotePath, localPath, {
-          concurrency: 64,
+          concurrency: 16,
           chunkSize: 65536,
+          highWaterMark: 1048576,
           step: (totalTransferred, chunk, total) => {
             resetWatchdog();
             const now = Date.now();
@@ -887,7 +898,7 @@ class SshService {
       encodeField(n),
     ]);
 
-    const comment = `clinmedia-ops@${os.hostname()}`;
+    const comment = `kraken-cli@${os.hostname()}`;
     const publicKeyOpenSsh = `ssh-rsa ${wireKey.toString('base64')} ${comment}`;
 
     // ── Escribir archivos ─────────────────────────────────────────────────────

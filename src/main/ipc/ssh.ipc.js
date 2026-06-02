@@ -459,7 +459,7 @@ function registerSshHandlers(ipcMain, mainWindow, scope) {
       if (client) {
         try {
           const logContent = debugLogs.join('\n').replace(/"/g, '\\"');
-          await getSshService().executeCommand(client, `printf '%s\n' "${logContent}" > /tmp/clinmedia_ops_debug.log`);
+          await getSshService().executeCommand(client, `printf '%s\n' "${logContent}" > /tmp/kraken_cli_debug.log`);
         } catch (_) { }
         try { await getSshService().disconnect(client); } catch (_) { }
       }

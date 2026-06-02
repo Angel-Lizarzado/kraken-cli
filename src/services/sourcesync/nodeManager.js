@@ -1,5 +1,5 @@
-/**
- * @module scalifylabs/nodeManager
+﻿/**
+ * @module SOURCESYNC/nodeManager
  * @description Gestión resiliente de versiones de Node.js en Plesk.
  *
  * Bug conocido de Plesk (validado en producción):
@@ -58,14 +58,14 @@ function parsearVersiones(stdout) {
  * @returns {Promise<boolean>}
  */
 async function intentarAsignarVersion(ssh, domain, version) {
-  console.log(`[SCALIFYLABS:Node] Intentando asignar Node.js ${version} al dominio ${domain}...`);
+  console.log(`[SOURCESYNC:Node] Intentando asignar Node.js ${version} al dominio ${domain}...`);
 
   // 1. Habilitar la versión en el panel global de Plesk (no-op si ya está)
   const { code: codeHabilitar, stderr: errHabilitar } = await ssh.execCommand(
     `plesk ext nodejs --enable -version ${version}`
   );
   if (codeHabilitar !== 0) {
-    console.warn(`[SCALIFYLABS:Node] Advertencia al habilitar versión ${version} globalmente: ${errHabilitar}`);
+    console.warn(`[SOURCESYNC:Node] Advertencia al habilitar versión ${version} globalmente: ${errHabilitar}`);
     // No abortamos — puede que ya esté habilitada y Plesk devuelva non-zero igualmente
   }
 
@@ -77,12 +77,12 @@ async function intentarAsignarVersion(ssh, domain, version) {
 
   if (code !== 0) {
     console.warn(
-      `[SCALIFYLABS:Node] Fallo al asignar Node.js ${version} a ${domain} (código ${code}): ${stderr || stdout}`
+      `[SOURCESYNC:Node] Fallo al asignar Node.js ${version} a ${domain} (código ${code}): ${stderr || stdout}`
     );
     return false;
   }
 
-  console.log(`[SCALIFYLABS:Node] ✓ Node.js ${version} asignado a ${domain}. Respuesta: ${stdout || '(ok)'}`);
+  console.log(`[SOURCESYNC:Node] ✓ Node.js ${version} asignado a ${domain}. Respuesta: ${stdout || '(ok)'}`);
   return true;
 }
 
@@ -103,15 +103,15 @@ async function intentarAsignarVersion(ssh, domain, version) {
 async function garantizarVersionNode(ssh, domain) {
   // Encender el motor Node.js para el dominio ANTES de intentar asignar versión.
   // Si ya estaba habilitado, Plesk puede devolver código no-cero — no es crítico.
-  console.log(`[SCALIFYLABS:Node] Encendiendo motor Node.js para ${domain}...`);
+  console.log(`[SOURCESYNC:Node] Encendiendo motor Node.js para ${domain}...`);
   const { code: enableCode, stderr: enableErr } = await ssh.execCommand(
     `plesk ext nodejs --enable -domain ${domain}`
   );
   if (enableCode !== 0) {
-    console.warn(`[SCALIFYLABS:Node] Advertencia al habilitar Node.js en ${domain}: ${enableErr}`);
+    console.warn(`[SOURCESYNC:Node] Advertencia al habilitar Node.js en ${domain}: ${enableErr}`);
   }
 
-  console.log(`[SCALIFYLABS:Node] Consultando versiones de Node.js disponibles en Plesk...`);
+  console.log(`[SOURCESYNC:Node] Consultando versiones de Node.js disponibles en Plesk...`);
 
   const { stdout: listaRaw, code: codeLista } = await ssh.execCommand(
     'plesk ext nodejs --versions'
@@ -119,13 +119,13 @@ async function garantizarVersionNode(ssh, domain) {
 
   if (codeLista !== 0) {
     console.warn(
-      `[SCALIFYLABS:Node] No se pudo listar versiones de Node.js. Procediendo directo a fallback.`
+      `[SOURCESYNC:Node] No se pudo listar versiones de Node.js. Procediendo directo a fallback.`
     );
   }
 
   const versiones = parsearVersiones(listaRaw || '');
   console.log(
-    `[SCALIFYLABS:Node] Versiones detectadas: ${versiones.map((v) => `${v.version}(${v.habilitada ? 'ON' : 'OFF'})`).join(', ') || 'ninguna'}`
+    `[SOURCESYNC:Node] Versiones detectadas: ${versiones.map((v) => `${v.version}(${v.habilitada ? 'ON' : 'OFF'})`).join(', ') || 'ninguna'}`
   );
 
   // ── Intento 1: Versión LTS preferida (22.x > 20.x) ──────────────────────
@@ -147,7 +147,7 @@ async function garantizarVersionNode(ssh, domain) {
 
   // ── Intento 2 (Fallback): v24.15.0 — Validada en producción ─────────────
   console.warn(
-    `[SCALIFYLABS:Node] Las versiones LTS fallaron o no están disponibles. ` +
+    `[SOURCESYNC:Node] Las versiones LTS fallaron o no están disponibles. ` +
     `Aplicando fallback forzado a v${VERSION_FALLBACK}...`
   );
 
@@ -155,7 +155,7 @@ async function garantizarVersionNode(ssh, domain) {
 
   if (!exitoFallback) {
     throw new Error(
-      `[SCALIFYLABS:Node] Fallo crítico: No se pudo asignar ninguna versión de Node.js al dominio ${domain}. ` +
+      `[SOURCESYNC:Node] Fallo crítico: No se pudo asignar ninguna versión de Node.js al dominio ${domain}. ` +
       `Verificar manualmente en el panel Plesk → Extensiones → Node.js.`
     );
   }
@@ -164,3 +164,4 @@ async function garantizarVersionNode(ssh, domain) {
 }
 
 module.exports = { garantizarVersionNode, parsearVersiones, VERSION_FALLBACK };
+

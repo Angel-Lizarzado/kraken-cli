@@ -1,13 +1,13 @@
-/**
- * @module scalifylabs
+﻿/**
+ * @module SOURCESYNC
  * @description Módulo de despliegue automatizado de proyectos Next.js (Standalone) en Plesk.
  *
- * Punto de entrada centralizado del módulo Scalifylabs.
+ * Punto de entrada centralizado del módulo SOURCESYNC.
  * Expone las funciones públicas de los 4 servicios que componen el orquestador.
  *
  * Uso desde un IPC handler:
- *   const scalifylabs = require('./services/scalifylabs');
- *   const resultado = await scalifylabs.orchestrarDespliegue(ssh, config, onProgreso);
+ *   const SOURCESYNC = require('./services/SOURCESYNC');
+ *   const resultado = await SOURCESYNC.orchestrarDespliegue(ssh, config, onProgreso);
  */
 
 'use strict';
@@ -33,3 +33,4 @@ module.exports = {
   // Constantes
   VERSION_FALLBACK,
 };
+

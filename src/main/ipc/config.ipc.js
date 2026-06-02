@@ -133,6 +133,47 @@ function registerConfigHandlers(ipcMain, mainWindow) {
     }
   });
 
+  // Get Cloudflare Account ID
+  ipcMain.handle('config:get-cloudflare-account-id', async () => {
+    try {
+      let configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+      const raw = cfg?.cloudflare?.accountId || '';
+      return { success: true, accountId: raw };
+    } catch (error) {
+      console.error('Error getting Cloudflare account ID:', error);
+      return { success: false, error: error.message, accountId: '' };
+    }
+  });
+
+  // Set Cloudflare Account ID
+  ipcMain.handle('config:set-cloudflare-account-id', async (event, { accountId }) => {
+    try {
+      if (!accountId || typeof accountId !== 'string' || !accountId.trim()) {
+        return { success: false, error: 'Account ID inválido: debe ser un string no vacío' };
+      }
+      let configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+      cfg.cloudflare = cfg.cloudflare || { apiToken: '', accountId: '' };
+      cfg.cloudflare.accountId = accountId.trim();
+      await configManager.saveConfig();
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('config:updated', {
+          success: true,
+          config: configManager.getConfig(),
+        });
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('[CF-TOKEN] Error setting Cloudflare account ID:', error);
+      return { success: false, error: error.message || 'Error desconocido' };
+    }
+  });
+
   // ── Workspace Path ──
 
   // Get current workspace path (resolved dynamically)
@@ -233,6 +274,83 @@ function registerConfigHandlers(ipcMain, mainWindow) {
     } catch (error) {
       console.error('[CONFIG] Error al eliminar servidor:', error);
       return { success: false, error: error.message };
+    }
+  });
+
+  // ── SSL Email ──
+
+  // Get current SSL email
+  ipcMain.handle('config:get-ssl-email', async () => {
+    try {
+      const configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+      return { success: true, email: cfg?.sslEmail || '' };
+    } catch (error) {
+      console.error('[CONFIG] Error al leer sslEmail:', error);
+      return { success: false, error: error.message, email: '' };
+    }
+  });
+
+  // Set SSL email
+  ipcMain.handle('config:set-ssl-email', async (event, { email }) => {
+    try {
+      if (typeof email !== 'string') {
+        return { success: false, error: 'El email debe ser un string.' };
+      }
+
+      const configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+
+      // Allow empty string to clear the email
+      cfg.sslEmail = email.trim();
+      await configManager.saveConfig();
+
+      console.log(`[CONFIG] SSL email actualizado: ${cfg.sslEmail || '(vacío)'}`);
+
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('config:updated', {
+          success: true,
+          config: configManager.getConfig(),
+        });
+      }
+
+      return { success: true };
+    } catch (error) {
+      console.error('[CONFIG] Error al guardar sslEmail:', error);
+      return { success: false, error: error.message };
+    }
+  });
+  
+  // ── Correo Automático ────────────────────────────────────────────────────────
+  ipcMain.handle('correo:contrasena:guardar', async (event, { password }) => {
+    try {
+      const { guardarContrasena } = require('../../services/keytar-service');
+      await guardarContrasena(password);
+      return { exito: true, mensaje: 'Contraseña maestra guardada correctamente.' };
+    } catch (error) {
+      return { exito: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('correo:contrasena:existe', async () => {
+    try {
+      const { verificarExiste } = require('../../services/keytar-service');
+      const existe = await verificarExiste();
+      return { exito: true, existe };
+    } catch (error) {
+      return { exito: false, error: error.message };
+    }
+  });
+
+  ipcMain.handle('correo:contrasena:eliminar', async () => {
+    try {
+      const { eliminarContrasena } = require('../../services/keytar-service');
+      await eliminarContrasena();
+      return { exito: true, mensaje: 'Contraseña maestra eliminada correctamente.' };
+    } catch (error) {
+      return { exito: false, error: error.message };
     }
   });
 }

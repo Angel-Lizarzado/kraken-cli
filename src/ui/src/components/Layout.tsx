@@ -9,26 +9,32 @@ interface NavModule {
 
 const NAV_MODULES: readonly NavModule[] = [
   { id: 'dashboard',   name: 'Panel',        description: 'Gestión de servidores' },
+  { id: 'syncdns',     name: 'Sync DNS',     description: 'Fase 0: Redirección DNS' },
   { id: 'extraction',  name: 'Extracción',   description: 'Fase 1: Backup desde Hostinger' },
   { id: 'migration',   name: 'Migración',    description: 'Fase 2: Transferencia a Plesk' },
-  { id: 'dns',         name: 'DNS Sync',     description: 'Fase 3: Cloudflare DNS' },
-  { id: 'ssl',         name: 'SSL',          description: 'Fase 3.5: Certificados SSL' },
+  { id: 'provisioning', name: 'DNS -> SSL', description: 'Fase 3: Red y SSL' },
   { id: 'validation',  name: 'Validación',   description: 'Fase 4: Post-migración' },
-  { id: 'scalifylabs', name: 'ScalifyLabs',  description: 'Despliegue GitHub a Plesk' },
-  { id: 'config',      name: 'Configuración',description: 'Cuentas y llaves SSH' },
-  { id: 'terminal',    name: 'Terminal',     description: 'Herramientas avanzadas' },
+  { id: 'sourcesync', name: 'SourceSync',   description: 'Despliegue Git a Plesk' },
+  { id: 'cms',         name: 'Reconstructor', description: 'Reconstrucción WP en masa' },
+  { id: 'security',    name: 'Seguridad',     description: 'Administración avanzada' },
+  { id: 'config',      name: 'Configuración', description: 'Cuentas y llaves SSH' },
+  { id: 'terminal',    name: 'Terminal',      description: 'Herramientas avanzadas' },
 ] as const;
 
 // SVG path data for nav icons (Lucide-compatible)
 const MODULE_ICONS: Record<string, string> = {
   dashboard:   'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6',
+  syncdns:     'M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9',
   extraction:  'M12 4v16m8-8H4',
   migration:   'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4',
-  dns:         'M21 12a9 9 0 11-18 0 9 9 0 0118 0z M12 8v4l3 3',
-  ssl:         'M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z',
+  provisioning: 'M22 12A10 10 0 1 1 12 2a10 10 0 0 1 10 10z M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z M2 12h20',
   validation:  'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z',
-  // Cohete: ScalifyLabs
-  scalifylabs: 'M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2l.55-.55M15 12H7M20.4 5.6a5.5 5.5 0 0 0-7.77 7.77l7.77-7.77zM9 6.5V12M15 12l1.5 1.5',
+  // Cohete: SourceSync
+  sourcesync: 'M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2l.55-.55M15 12H7M20.4 5.6a5.5 5.5 0 0 0-7.77 7.77l7.77-7.77zM9 6.5V12M15 12l1.5 1.5',
+  // Wrench: CMS Reconstructor
+  cms:         'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
+  // Escudo: Seguridad
+  security:    'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   config:      'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
   terminal:    'M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z',
 };
@@ -78,7 +84,7 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
           </button>
           <div>
             <h1 className="font-display text-base font-bold" style={{ color: 'var(--text-primary)' }}>
-              Clinmedia Ops
+              Kraken CLI
             </h1>
             <p className="text-xs leading-none" style={{ color: 'var(--text-muted)' }}>
               Centro de control de migraciones

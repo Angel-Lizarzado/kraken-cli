@@ -7,7 +7,6 @@ interface LookupBarProps {
 interface LookupResult {
   ip: string;
   hostName: string | null;
-  isClinmedia: boolean;
 }
 
 export default function LookupBar({ onLookup }: LookupBarProps) {
@@ -27,9 +26,7 @@ export default function LookupBar({ onLookup }: LookupBarProps) {
     try {
       const res = await onLookup(d);
       if (res.success && res.ip) {
-        const hostName = res.hostName || null;
-        const isClinmedia = hostName ? hostName.toLowerCase().includes('clinmediasv') : false;
-        setResult({ ip: res.ip, hostName, isClinmedia });
+        setResult({ ip: res.ip, hostName: res.hostName || null });
       } else {
         setError(res.error || 'Error al resolver dominio');
       }
@@ -72,14 +69,10 @@ export default function LookupBar({ onLookup }: LookupBarProps) {
             transition: 'flex 0.3s ease, max-width 0.3s ease, opacity 0.25s ease',
             backgroundColor: error
               ? 'var(--color-danger-bg, rgba(239,68,68,0.15))'
-              : result?.isClinmedia
-                ? 'var(--color-success-bg, rgba(34,197,94,0.15))'
-                : 'var(--color-warning-bg, rgba(234,179,8,0.15))',
+              : 'var(--color-success-bg, rgba(34,197,94,0.15))',
             color: error
               ? 'var(--color-danger, #ef4444)'
-              : result?.isClinmedia
-                ? 'var(--color-success, #22c55e)'
-                : 'var(--color-warning, #eab308)',
+              : 'var(--color-success, #22c55e)',
           }}
         >
           {error

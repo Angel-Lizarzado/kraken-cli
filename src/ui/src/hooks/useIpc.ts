@@ -20,9 +20,11 @@ export const IPC_CHANNEL = {
   // Cloudflare
   CLOUDFLARE_SYNC_DOMAINS: 'cloudflare:sync-domains',
   CLOUDFLARE_GET_ZONES: 'cloudflare:get-zones',
-  // Config tokens
   CONFIG_GET_CLOUDFLARE_TOKEN: 'config:get-cloudflare-token',
   CONFIG_SET_CLOUDFLARE_TOKEN: 'config:set-cloudflare-token',
+  // Sync DNS
+  SYNCDNS_RUN_BATCH: 'syncdns:run-batch',
+  SYNCDNS_LOAD_CSV: 'syncdns:load-csv',
   // Plesk
   PLESK_INSTALL_SSL: 'plesk:install-ssl',
   // Extraction
@@ -149,6 +151,16 @@ export interface CloudflareTokenResult {
 export interface BatchResult {
   success: boolean;
   results?: Array<{ domain: string; success: boolean }>;
+  error?: string;
+  successCount?: number;
+  errors?: number;
+}
+
+export interface CsvLoadResult {
+  success: boolean;
+  canceled?: boolean;
+  count?: number;
+  dates?: Record<string, string>;
   error?: string;
 }
 
@@ -429,6 +441,40 @@ export const useIpc = () => {
         cloudName,
       });
       return result;
+    },
+    [getApi],
+  );
+
+  const runSyncDnsBatch = useCallback(
+    async (accountName: string, cloudName: string, domains: string[]): Promise<BatchResult> => {
+      try {
+        const api = getApi();
+        const result = await api.invoke(IPC_CHANNEL.SYNCDNS_RUN_BATCH as IpcChannel, {
+          accountName,
+          cloudName,
+          domains,
+        });
+        return result as BatchResult;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Error desconocido';
+        console.error('Error al ejecutar sincronización DNS masiva:', error);
+        return { success: false, error: message };
+      }
+    },
+    [getApi],
+  );
+
+  const loadCsvDates = useCallback(
+    async (): Promise<CsvLoadResult> => {
+      try {
+        const api = getApi();
+        const result = await api.invoke(IPC_CHANNEL.SYNCDNS_LOAD_CSV as IpcChannel);
+        return result as CsvLoadResult;
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : 'Error desconocido';
+        console.error('Error al cargar CSV:', error);
+        return { success: false, error: message };
+      }
     },
     [getApi],
   );
@@ -753,6 +799,7 @@ export const useIpc = () => {
     getDominiosProcesados,
     testConnection,
     generateSshKey,
+    runSyncDnsBatch,
     syncCloudflareDns,
     getCloudflareZones,
     getCloudflareToken,
@@ -767,5 +814,6 @@ export const useIpc = () => {
     lookupHost,
     tailServerLog,
     execServerCommand,
+    loadCsvDates,
   } as const;
 };

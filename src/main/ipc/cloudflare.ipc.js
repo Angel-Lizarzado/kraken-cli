@@ -104,11 +104,23 @@ function registerCloudflareHandlers(ipcMain, mainWindow, scope) {
       const cloudflareApiService = getCloudflareApiService();
       const configManager = getConfigManager();
       await configManager.initialize();
-      await cloudflareApiService.initialize();
-      const workspaceManager = getWorkspaceManager();
-      await workspaceManager.initialize();
 
       const appState = getAppStateManager();
+      const globalConfig = configManager.getConfig() || {};
+
+      console.log("=== DUMP DEL ESTADO GLOBAL ===");
+      console.log(JSON.stringify(globalConfig, null, 2));
+      console.log("==============================");
+      
+      const cfToken = globalConfig.cloudflare?.apiToken || globalConfig.cloudflareApiToken;
+
+      if (!cfToken) {
+        throw new Error('Credenciales de Cloudflare no configuradas en la aplicación');
+      }
+
+      await cloudflareApiService.initialize(cfToken);
+      const workspaceManager = getWorkspaceManager();
+      await workspaceManager.initialize();
 
       // RESET antes de correr — evita acumulación de resultados/logs de corridas anteriores
       appState.resetModuleState('cloudflare');
@@ -136,6 +148,40 @@ function registerCloudflareHandlers(ipcMain, mainWindow, scope) {
       for (let i = 0; i < cleanDomains.length; i++) {
         const domain = cleanDomains[i];
 
+        // ── CHEQUEO DE ESTADO (PERSISTENCIA WORKSPACE) ──
+        try {
+          if (accountName && cloudName) {
+            const dominios = await workspaceManager.getDominiosProcesados(accountName, cloudName);
+            const foundEntry = dominios.find(d => {
+              const dName = typeof d === 'string' ? d : (d.dominio || d.name || '');
+              return dName === domain;
+            });
+            
+            if (foundEntry && typeof foundEntry === 'object' && foundEntry.dnsSynced === true) {
+              sendCloudflareLog(`[SKIP] Dominio ${domain} ya sincronizado en Cloudflare`, 'info');
+              
+              const currentState = appState.getState('cloudflare');
+              const existingIdx = currentState.results.findIndex(r => r.domain === domain);
+              const entry = { domain, status: 'success', message: 'Saltado (ya sincronizado)' };
+              if (existingIdx >= 0) {
+                currentState.results[existingIdx] = entry;
+              } else {
+                currentState.results.push(entry);
+              }
+              appState.update('cloudflare', { results: currentState.results });
+              
+              appState.update('cloudflare', {
+                currentProgress: Math.min(Math.round(((i + 1) / cleanDomains.length) * 100), 100),
+              });
+              event.sender.send('cloudflare:state-changed', appState.getState('cloudflare'));
+              
+              continue;
+            }
+          }
+        } catch (e) {
+          // Si el chequeo falla (ej. JSON corrupto), ignoramos el skip y procesamos normal
+        }
+
         if (mainWindow && mainWindow.webContents) {
           mainWindow.webContents.send('sync:domain-start', { phase: 'dns', domain });
         }
@@ -156,10 +202,30 @@ function registerCloudflareHandlers(ipcMain, mainWindow, scope) {
         };
 
         try {
-          const result = await cloudflareApiService.syncSingleDomain(domain, pleskIp, {
-            sendLog: logCallback,
-            sendStateChanged: stateCallback,
-          });
+          const { syncDnsRecords } = require('../../services/dns-service');
+          
+          const punycodeDomain = require('node:url').domainToASCII(domain);
+          sendCloudflareLog(`Consultando zona Cloudflare para ${domain}`, 'info');
+          const zone = await cloudflareApiService.getOrCreateZone(punycodeDomain);
+
+          if (!zone || !zone.id) {
+             throw new Error(zone.error || 'Zona no encontrada');
+          }
+
+          sendCloudflareLog(`Ejecutando sincronización DNS V2 (Idempotente) para ${domain}...`, 'info');
+          const syncResults = await syncDnsRecords(zone.id, punycodeDomain, pleskIp, true);
+
+          for (const res of syncResults) {
+            if (res.action === 'skip') sendCloudflareLog(`[SKIP] ${res.name} — IP ya es ${pleskIp}`, 'info');
+            else if (res.action === 'update') sendCloudflareLog(`[UPDATE] ${res.name} actualizada a ${pleskIp}`, 'success');
+            else if (res.action === 'create') sendCloudflareLog(`[CREATE] ${res.name} inyectado apuntando a ${pleskIp}`, 'success');
+          }
+
+          try {
+            await cloudflareApiService.purgeCache(zone.id, [`https://${punycodeDomain}/*`, `https://www.${punycodeDomain}/*`]);
+          } catch (e) {}
+
+          const result = { success: true };
 
           if (result.success) {
             const currentState = appState.getState('cloudflare');
@@ -176,6 +242,16 @@ function registerCloudflareHandlers(ipcMain, mainWindow, scope) {
               await workspaceManager.setCloudflareSyncTimestamp(accountName, cloudName, domain).catch(err => {
                 console.warn('[DNS] Failed to persist timestamp for ' + domain + ':', err.message);
               });
+              
+              // Persistir el estado de sincronización exitosa en el Workspace
+              try {
+                await workspaceManager.updateDominiosProcesados(accountName, cloudName, [{
+                  dominio: domain,
+                  dnsSynced: true
+                }]);
+              } catch (err) {
+                console.warn('[DNS] Failed to persist dnsSynced for ' + domain + ':', err.message);
+              }
             }
           } else {
             const currentState = appState.getState('cloudflare');
@@ -190,7 +266,11 @@ function registerCloudflareHandlers(ipcMain, mainWindow, scope) {
             sendCloudflareLog('[ERROR] ' + domain + ': ' + (result.error || 'Error desconocido'), 'error');
           }
         } catch (error) {
-          console.error('[DNS] Fallo ' + domain + ':', error.message);
+          if (error.response && error.response.data && error.response.data.errors) {
+            console.error(`[CF 400 ERROR en ${domain}]:`, JSON.stringify(error.response.data.errors, null, 2));
+          } else {
+            console.error(`[ERROR FATAL en ${domain}]:`, error.message);
+          }
           const currentState = appState.getState('cloudflare');
           const existingIdx = currentState.results.findIndex(r => r.domain === domain);
           const entry = { domain, status: 'error', message: error.message };

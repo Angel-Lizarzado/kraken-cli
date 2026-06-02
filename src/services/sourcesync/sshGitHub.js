@@ -1,5 +1,5 @@
 /**
- * @module scalifylabs/sshGitHub
+ * @module sourcesync/sshGitHub
  * @description Vinculación de llave SSH Ed25519 en Plesk con repositorios de GitHub.
  *
  * Flujo:
@@ -35,7 +35,7 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
   const keyPath = `/root/.ssh/id_ed25519_${domainSlug}`;
 
   // ── Paso 1: Generar llave Ed25519 en el servidor Plesk ───────────────────
-  console.log(`[SCALIFYLABS:GitHub] Generando llave Ed25519 en ${keyPath}...`);
+  console.log(`[SOURCESYNC:GitHub] Generando llave Ed25519 en ${keyPath}...`);
 
   // Verificar si ya existe la llave para evitar sobrescrituras accidentales
   const { stdout: existeArchivo } = await ssh.execCommand(
@@ -43,7 +43,7 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
   );
 
   if (existeArchivo.trim() === 'SI') {
-    console.log(`[SCALIFYLABS:GitHub] Llave ya existe en ${keyPath}. Reutilizando.`);
+    console.log(`[SOURCESYNC:GitHub] Llave ya existe en ${keyPath}. Reutilizando.`);
   } else {
     const genResult = await ssh.execCommand(
       `ssh-keygen -t ed25519 -C "plesk-deploy-${domain}" -f ${keyPath} -N ""`,
@@ -52,7 +52,7 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
 
     if (genResult.code !== 0) {
       throw new Error(
-        `[SCALIFYLABS:GitHub] Fallo al generar llave Ed25519 para ${domain}: ${genResult.stderr}`
+        `[SOURCESYNC:GitHub] Fallo al generar llave Ed25519 para ${domain}: ${genResult.stderr}`
       );
     }
   }
@@ -64,21 +64,21 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
 
   if (codeLectura !== 0 || !llavePub.trim()) {
     throw new Error(
-      `[SCALIFYLABS:GitHub] No se pudo leer la llave pública en ${keyPath}.pub. Error: ${errLectura}`
+      `[SOURCESYNC:GitHub] No se pudo leer la llave pública en ${keyPath}.pub. Error: ${errLectura}`
     );
   }
 
   const llavePubLimpia = llavePub.trim();
-  console.log(`[SCALIFYLABS:GitHub] Llave pública leída correctamente (${llavePubLimpia.length} chars).`);
+  console.log(`[SOURCESYNC:GitHub] Llave pública leída correctamente (${llavePubLimpia.length} chars).`);
 
   // ── Paso 2: Registrar llave en GitHub vía API REST ────────────────────────
-  console.log(`[SCALIFYLABS:GitHub] Registrando Deploy Key en ${repoOwner}/${repoName}...`);
+  console.log(`[SOURCESYNC:GitHub] Registrando Deploy Key en ${repoOwner}/${repoName}...`);
 
   try {
     await axios.post(
       `https://api.github.com/repos/${repoOwner}/${repoName}/keys`,
       {
-        title: `ClinmediaOps-${domain}`,
+        title: `KrakenCLI-${domain}`,
         key: llavePubLimpia,
         read_only: true,
       },
@@ -91,7 +91,7 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
         timeout: 15000,
       }
     );
-    console.log(`[SCALIFYLABS:GitHub] Deploy Key registrada exitosamente en GitHub.`);
+    console.log(`[SOURCESYNC:GitHub] Deploy Key registrada exitosamente en GitHub.`);
   } catch (axiosError) {
     // Extraer mensaje de error de la respuesta de GitHub
     const statusCode = axiosError.response?.status;
@@ -100,17 +100,17 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
     // 422 = llave ya registrada con ese título — puede ser intencional (re-deploy)
     if (statusCode === 422) {
       console.warn(
-        `[SCALIFYLABS:GitHub] La llave ya existe en GitHub (422). Continuando con la existente.`
+        `[SOURCESYNC:GitHub] La llave ya existe en GitHub (422). Continuando con la existente.`
       );
     } else {
       throw new Error(
-        `[SCALIFYLABS:GitHub] Error al registrar Deploy Key en GitHub (HTTP ${statusCode}): ${mensajeGitHub}`
+        `[SOURCESYNC:GitHub] Error al registrar Deploy Key en GitHub (HTTP ${statusCode}): ${mensajeGitHub}`
       );
     }
   }
 
   // ── Paso 3: Agregar github.com a known_hosts ─────────────────────────────
-  console.log(`[SCALIFYLABS:GitHub] Escaneando fingerprint de GitHub en known_hosts...`);
+  console.log(`[SOURCESYNC:GitHub] Escaneando fingerprint de GitHub en known_hosts...`);
 
   // ssh-keyscan puede fallar silenciosamente si github.com ya está en known_hosts
   // Usamos grep para evitar duplicados antes de agregar
@@ -121,7 +121,7 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
   // ── Paso 4: Configurar alias SSH en ~/.ssh/config ─────────────────────────
   // El alias permite tener múltiples llaves para múltiples repos en el mismo servidor
   const alias = `github.com-${domain.replace(/\./g, '-')}`;
-  console.log(`[SCALIFYLABS:GitHub] Configurando alias SSH: ${alias}...`);
+  console.log(`[SOURCESYNC:GitHub] Configurando alias SSH: ${alias}...`);
 
   // Verificar si el alias ya existe en ~/.ssh/config para evitar duplicados
   const { stdout: existeAlias } = await ssh.execCommand(
@@ -149,13 +149,13 @@ async function autorizarLlaveDespliegueGitHub(ssh, githubToken, repoOwner, repoN
 
     if (codeConfig !== 0) {
       throw new Error(
-        `[SCALIFYLABS:GitHub] No se pudo escribir en ~/.ssh/config: ${errConfig}`
+        `[SOURCESYNC:GitHub] No se pudo escribir en ~/.ssh/config: ${errConfig}`
       );
     }
 
-    console.log(`[SCALIFYLABS:GitHub] Alias "${alias}" configurado en ~/.ssh/config.`);
+    console.log(`[SOURCESYNC:GitHub] Alias "${alias}" configurado en ~/.ssh/config.`);
   } else {
-    console.log(`[SCALIFYLABS:GitHub] Alias "${alias}" ya existe en ~/.ssh/config. Sin cambios.`);
+    console.log(`[SOURCESYNC:GitHub] Alias "${alias}" ya existe en ~/.ssh/config. Sin cambios.`);
   }
 
   return { llavePub: llavePubLimpia, alias };

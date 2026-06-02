@@ -1,5 +1,5 @@
 /**
- * @module scalifylabs/pleskGit
+ * @module SOURCESYNC/pleskGit
  * @description Vinculación de repositorios GitHub en dominios Plesk.
  *
  * Arquitectura v5 — 8 Pasos (probada en producción):
@@ -36,7 +36,7 @@ async function run(ssh, cmd, { allowFail = false } = {}) {
   const { stdout, stderr, code } = await ssh.execCommand(cmd);
   if (code !== 0 && !allowFail) {
     throw new Error(
-      `[SCALIFYLABS:Git] CMD FAILED (exit ${code})\n` +
+      `[SOURCESYNC:Git] CMD FAILED (exit ${code})\n` +
       `  CMD: ${cmd}\n` +
       `  ERR: ${stderr || stdout}`
     );
@@ -58,7 +58,7 @@ const wait = (ms) => new Promise((res) => setTimeout(res, ms));
  */
 function transformarUrlSsh(url) {
   if (!url || typeof url !== 'string') {
-    throw new Error(`[SCALIFYLABS:Git] URL inválida: ${JSON.stringify(url)}`);
+    throw new Error(`[SOURCESYNC:Git] URL inválida: ${JSON.stringify(url)}`);
   }
 
   const clean = url.trim().replace(/\/$/, '').replace(/\.git$/, '');
@@ -66,7 +66,7 @@ function transformarUrlSsh(url) {
 
   if (!afterHost || !afterHost.includes('/')) {
     throw new Error(
-      `[SCALIFYLABS:Git] URL no reconocida: "${url}". ` +
+      `[SOURCESYNC:Git] URL no reconocida: "${url}". ` +
       `Formato esperado: https://github.com/owner/repo`
     );
   }
@@ -76,11 +76,11 @@ function transformarUrlSsh(url) {
   const repo  = parts[1];
 
   if (!owner || !repo) {
-    throw new Error(`[SCALIFYLABS:Git] No se pudo extraer owner/repo de: "${url}"`);
+    throw new Error(`[SOURCESYNC:Git] No se pudo extraer owner/repo de: "${url}"`);
   }
 
   const urlSsh = `git@github.com:${owner}/${repo}.git`;
-  console.log(`[SCALIFYLABS:Git] URL transformada: "${url}" → "${urlSsh}"`);
+  console.log(`[SOURCESYNC:Git] URL transformada: "${url}" → "${urlSsh}"`);
   return { urlSsh, owner, repo };
 }
 
@@ -88,7 +88,7 @@ function transformarUrlSsh(url) {
 // PASO 1 — Limpiar estado previo (idempotente)
 // ─────────────────────────────────────────────────────────────────────────────
 async function cleanPreviousState(ssh, domain) {
-  console.log(`[SCALIFYLABS:Git] [1/8] Limpiando estado previo...`);
+  console.log(`[SOURCESYNC:Git] [1/8] Limpiando estado previo...`);
 
   await run(ssh,
     `plesk ext git --delete -domain ${domain} -name "${REPO_NAME}" 2>/dev/null || true`,
@@ -107,14 +107,14 @@ async function cleanPreviousState(ssh, domain) {
     { allowFail: true }
   );
 
-  console.log(`[SCALIFYLABS:Git] Limpieza completada.`);
+  console.log(`[SOURCESYNC:Git] Limpieza completada.`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PASO 2 — Registrar repo en Plesk y extraer llave SSH del --info
 // ─────────────────────────────────────────────────────────────────────────────
 async function registerRepoInPlesk(ssh, domain, sshUrl) {
-  console.log(`[SCALIFYLABS:Git] [2/8] Registrando repo en Plesk para obtener llave SSH...`);
+  console.log(`[SOURCESYNC:Git] [2/8] Registrando repo en Plesk para obtener llave SSH...`);
 
   await run(ssh,
     `plesk ext git --create -domain ${domain} -name "${REPO_NAME}" -url "${sshUrl}" -type remote`
@@ -128,12 +128,12 @@ async function registerRepoInPlesk(ssh, domain, sshUrl) {
   const keyMatch = infoOut.match(/SSH public key:\s*(ssh-\S+\s+\S+(?:\s+\S+)?)/i);
   if (keyMatch) {
     const key = keyMatch[1].trim();
-    console.log(`[SCALIFYLABS:Git] Llave SSH obtenida del --info: ${key.substring(0, 40)}...`);
+    console.log(`[SOURCESYNC:Git] Llave SSH obtenida del --info: ${key.substring(0, 40)}...`);
     return key;
   }
 
   // Fallback: --get-public-key
-  console.warn(`[SCALIFYLABS:Git] --info no retornó llave. Intentando --get-public-key...`);
+  console.warn(`[SOURCESYNC:Git] --info no retornó llave. Intentando --get-public-key...`);
   const { stdout: pkOut } = await run(ssh,
     `plesk ext git --get-public-key -domain ${domain}`,
     { allowFail: true }
@@ -142,12 +142,12 @@ async function registerRepoInPlesk(ssh, domain, sshUrl) {
   const pkMatch = (pkOut || '').match(/(ssh-\S+\s+\S+)/);
   if (pkMatch) {
     const key = pkMatch[1].trim();
-    console.log(`[SCALIFYLABS:Git] Llave SSH obtenida del --get-public-key: ${key.substring(0, 40)}...`);
+    console.log(`[SOURCESYNC:Git] Llave SSH obtenida del --get-public-key: ${key.substring(0, 40)}...`);
     return key;
   }
 
   throw new Error(
-    `[SCALIFYLABS:Git] No se pudo obtener la llave SSH de Plesk para ${domain}.\n` +
+    `[SOURCESYNC:Git] No se pudo obtener la llave SSH de Plesk para ${domain}.\n` +
     `Output --info: ${infoOut.substring(0, 400)}`
   );
 }
@@ -157,13 +157,13 @@ async function registerRepoInPlesk(ssh, domain, sshUrl) {
 // Delegado al callback registerKeyFn que provee deployOrchestrator.js
 // ─────────────────────────────────────────────────────────────────────────────
 async function registerKeyInGitHub(pleskPublicKey, registerKeyFn) {
-  console.log(`[SCALIFYLABS:Git] [3/8] Registrando deploy key en GitHub...`);
+  console.log(`[SOURCESYNC:Git] [3/8] Registrando deploy key en GitHub...`);
 
   if (typeof registerKeyFn === 'function') {
     await registerKeyFn(pleskPublicKey);
   }
 
-  console.log(`[SCALIFYLABS:Git] Esperando ${KEY_PROPAGATION_MS / 1000}s para propagación en GitHub...`);
+  console.log(`[SOURCESYNC:Git] Esperando ${KEY_PROPAGATION_MS / 1000}s para propagación en GitHub...`);
   await wait(KEY_PROPAGATION_MS);
 }
 
@@ -172,7 +172,7 @@ async function registerKeyInGitHub(pleskPublicKey, registerKeyFn) {
 // Usa `su -s /bin/bash` para que git use las llaves SSH del usuario correcto.
 // ─────────────────────────────────────────────────────────────────────────────
 async function manualBareClone(ssh, domain, sshUrl) {
-  console.log(`[SCALIFYLABS:Git] [4/8] Ejecutando clone manual como usuario de la suscripción...`);
+  console.log(`[SOURCESYNC:Git] [4/8] Ejecutando clone manual como usuario de la suscripción...`);
 
   const bareRepoPath = `/var/www/vhosts/${domain}/git/${REPO_NAME}`;
 
@@ -182,7 +182,7 @@ async function manualBareClone(ssh, domain, sshUrl) {
     `stat -c '%U' /var/www/vhosts/${domain}`
   );
   const subscriptionUser = sysUserOut.trim() || 'root';
-  console.log(`[SCALIFYLABS:Git] Usuario de suscripción: ${subscriptionUser}`);
+  console.log(`[SOURCESYNC:Git] Usuario de suscripción: ${subscriptionUser}`);
 
   // Doble check: aniquilar la carpeta completa antes del clone.
   // Git falla con exit 128 si el directorio existe (aunque esté vacío).
@@ -203,7 +203,7 @@ async function manualBareClone(ssh, domain, sshUrl) {
   if (cloneCode !== 0) {
     // Fallback: intentar como root si su falla (permisos de sudoers variables)
     console.warn(
-      `[SCALIFYLABS:Git] Clone como ${subscriptionUser} falló (${cloneCode}): ${cloneErr}. ` +
+      `[SOURCESYNC:Git] Clone como ${subscriptionUser} falló (${cloneCode}): ${cloneErr}. ` +
       `Intentando como root...`
     );
     await run(ssh,
@@ -216,11 +216,11 @@ async function manualBareClone(ssh, domain, sshUrl) {
   const { stdout: headContent } = await run(ssh, `cat "${bareRepoPath}/HEAD"`);
   if (!headContent.includes('ref:')) {
     throw new Error(
-      `[SCALIFYLABS:Git] Clone incompleto para ${domain}. HEAD contiene: ${headContent}`
+      `[SOURCESYNC:Git] Clone incompleto para ${domain}. HEAD contiene: ${headContent}`
     );
   }
 
-  console.log(`[SCALIFYLABS:Git] Clone verificado. HEAD: ${headContent}`);
+  console.log(`[SOURCESYNC:Git] Clone verificado. HEAD: ${headContent}`);
   await run(ssh, `chmod -R 755 "${bareRepoPath}"`);
 }
 
@@ -228,7 +228,7 @@ async function manualBareClone(ssh, domain, sshUrl) {
 // PASO 5 — Configurar CI/CD en Plesk (modo manual + deploy.sh)
 // ─────────────────────────────────────────────────────────────────────────────
 async function configureCICD(ssh, domain) {
-  console.log(`[SCALIFYLABS:Git] [5/8] Configurando CI/CD en Plesk...`);
+  console.log(`[SOURCESYNC:Git] [5/8] Configurando CI/CD en Plesk...`);
 
   await run(ssh,
     `plesk ext git --update` +
@@ -240,14 +240,14 @@ async function configureCICD(ssh, domain) {
     ` -run-actions true`
   );
 
-  console.log(`[SCALIFYLABS:Git] CI/CD configurado (rama: ${TARGET_BRANCH}, acción: ${DEPLOY_ACTION}).`);
+  console.log(`[SOURCESYNC:Git] CI/CD configurado (rama: ${TARGET_BRANCH}, acción: ${DEPLOY_ACTION}).`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PASO 6 — Primer deploy vía Plesk (--deploy)
 // ─────────────────────────────────────────────────────────────────────────────
 async function firstPleskDeploy(ssh, domain) {
-  console.log(`[SCALIFYLABS:Git] [6/8] Ejecutando primer deploy vía Plesk...`);
+  console.log(`[SOURCESYNC:Git] [6/8] Ejecutando primer deploy vía Plesk...`);
 
   const { code, stderr } = await ssh.execCommand(
     `plesk ext git --deploy -domain ${domain} -name "${REPO_NAME}"`
@@ -255,12 +255,30 @@ async function firstPleskDeploy(ssh, domain) {
 
   if (code !== 0) {
     console.warn(
-      `[SCALIFYLABS:Git] --deploy devolvió code ${code}: ${stderr}. ` +
+      `[SOURCESYNC:Git] --deploy devolvió code ${code}: ${stderr}. ` +
       `Continuando — bootstrap manual garantiza el arranque.`
     );
   } else {
-    console.log(`[SCALIFYLABS:Git] Plesk deploy completado.`);
+    console.log(`[SOURCESYNC:Git] Plesk deploy completado.`);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PASO 6.5 — Node.js 22.x Bootstrap
+// Habilita Node.js, fuerza la versión 22.x y establece npm como package manager
+// Es vital ejecutar esto antes de que deploy.sh intente hacer 'npm install'
+// ─────────────────────────────────────────────────────────────────────────────
+async function provisionNodeJS(ssh, domain) {
+  console.log(`[SOURCESYNC:Git] [6.5/8] Aprovisionando entorno Node.js 22.x en Plesk...`);
+
+  const nodeCmds = [
+    `plesk bin nodejs --enable -domain "${domain}" > /dev/null 2>&1 || true`,
+    `plesk bin nodejs --update -domain "${domain}" -version 22.x > /dev/null 2>&1 || true`,
+    `plesk bin nodejs --update -domain "${domain}" -package-manager npm > /dev/null 2>&1 || true`
+  ].join(' && ');
+
+  await run(ssh, nodeCmds, { allowFail: true });
+  console.log(`[SOURCESYNC:Git] Motor Node.js 22.x activado ✓`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +286,7 @@ async function firstPleskDeploy(ssh, domain) {
 // Cubre el caso donde Plesk no dispara las additional actions en el primer deploy.
 // ─────────────────────────────────────────────────────────────────────────────
 async function forceBootstrapDeploy(ssh, domain) {
-  console.log(`[SCALIFYLABS:Git] [7/8] Ejecutando deploy.sh directamente (bootstrap garantizado)...`);
+  console.log(`[SOURCESYNC:Git] [7/8] Ejecutando deploy.sh directamente (bootstrap garantizado)...`);
 
   const httpdocs = `/var/www/vhosts/${domain}/httpdocs`;
 
@@ -278,22 +296,22 @@ async function forceBootstrapDeploy(ssh, domain) {
     `cd "${httpdocs}" && sh ./deploy.sh 2>&1`
   );
 
-  if (stdout) console.log(`[SCALIFYLABS:Git] deploy.sh output:\n${stdout}`);
+  if (stdout) console.log(`[SOURCESYNC:Git] deploy.sh output:\n${stdout}`);
 
   if (code !== 0) {
     throw new Error(
-      `[SCALIFYLABS:Git] deploy.sh falló con exit ${code} para ${domain}:\n${stderr || stdout}`
+      `[SOURCESYNC:Git] deploy.sh falló con exit ${code} para ${domain}:\n${stderr || stdout}`
     );
   }
 
-  console.log(`[SCALIFYLABS:Git] Bootstrap deploy completado.`);
+  console.log(`[SOURCESYNC:Git] Bootstrap deploy completado.`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // PASO 8 — Activar auto-deploy para futuros pushes
 // ─────────────────────────────────────────────────────────────────────────────
 async function enableAutoDeployMode(ssh, domain) {
-  console.log(`[SCALIFYLABS:Git] [8/8] Activando auto-deploy para futuros pushes...`);
+  console.log(`[SOURCESYNC:Git] [8/8] Activando auto-deploy para futuros pushes...`);
 
   const { code, stderr, stdout } = await ssh.execCommand(
     `plesk ext git --update` +
@@ -304,11 +322,11 @@ async function enableAutoDeployMode(ssh, domain) {
 
   if (code !== 0) {
     console.warn(
-      `[SCALIFYLABS:Git] No se pudo activar auto-deploy (${code}): ${stderr || stdout}. ` +
+      `[SOURCESYNC:Git] No se pudo activar auto-deploy (${code}): ${stderr || stdout}. ` +
       `El sitio está desplegado pero futuros push requerirán deploy manual.`
     );
   } else {
-    console.log(`[SCALIFYLABS:Git] Auto-deploy activado. ✅`);
+    console.log(`[SOURCESYNC:Git] Auto-deploy activado. ✅`);
   }
 }
 
@@ -331,7 +349,7 @@ async function configurarRepoEnPlesk(ssh, domain, httpsUrl, registerKeyFn, opcio
   // Unicode invisibles (\u200B–\u200D, \uFEFF) que rompen rutas SSH y stat.
   const d = domain.replace(/[\u200B-\u200D\uFEFF]/g, '').trim();
   if (d !== domain) {
-    console.warn(`[SCALIFYLABS:Git] Dominio sanitizado: "${domain}" → "${d}"`);
+    console.warn(`[SOURCESYNC:Git] Dominio sanitizado: "${domain}" → "${d}"`);
   }
 
   const { urlSsh } = transformarUrlSsh(httpsUrl);
@@ -348,6 +366,8 @@ async function configurarRepoEnPlesk(ssh, domain, httpsUrl, registerKeyFn, opcio
 
   await firstPleskDeploy(ssh, d);
 
+  await provisionNodeJS(ssh, d);
+
   await forceBootstrapDeploy(ssh, d);
 
   await enableAutoDeployMode(ssh, d);
@@ -356,3 +376,4 @@ async function configurarRepoEnPlesk(ssh, domain, httpsUrl, registerKeyFn, opcio
 }
 
 module.exports = { configurarRepoEnPlesk, transformarUrlSsh };
+

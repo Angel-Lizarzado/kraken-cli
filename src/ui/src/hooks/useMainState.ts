@@ -15,6 +15,7 @@ export interface ModuleProcessState {
 }
 
 export interface MainAppState {
+  syncdns: ModuleProcessState;
   extraction: ModuleProcessState;
   deployment: ModuleProcessState;
   cloudflare: ModuleProcessState;
@@ -29,7 +30,7 @@ export interface MainAppState {
 }
 
 // ── Module IDs ──
-const MODULE_IDS = ['extraction', 'deployment', 'cloudflare', 'ssl', 'malware'] as const;
+const MODULE_IDS = ['syncdns', 'extraction', 'deployment', 'cloudflare', 'ssl', 'malware'] as const;
 const SSH_CONNECTION_ID = 'sshConnection';
 
 // ── Hook ──
@@ -63,12 +64,13 @@ export function useMainState() {
         ]);
 
         const mainState: MainAppState = {
-          extraction: results[0] as ModuleProcessState,
-          deployment: results[1] as ModuleProcessState,
-          cloudflare: results[2] as ModuleProcessState,
-          ssl: results[3] as ModuleProcessState,
-          malware: results[4] as ModuleProcessState,
-          sshConnection: results[5] as MainAppState['sshConnection'],
+          syncdns: results[0] as ModuleProcessState,
+          extraction: results[1] as ModuleProcessState,
+          deployment: results[2] as ModuleProcessState,
+          cloudflare: results[3] as ModuleProcessState,
+          ssl: results[4] as ModuleProcessState,
+          malware: results[5] as ModuleProcessState,
+          sshConnection: results[6] as MainAppState['sshConnection'],
         };
 
         setState(mainState);

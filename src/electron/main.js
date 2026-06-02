@@ -119,6 +119,11 @@ ipcMain.on('updater:quit-and-install', () => {
 });
 
 function createSplashWindow() {
+  const iconPath = app.isPackaged 
+    ? path.join(process.resourcesPath, 'assets', 'icon.png') 
+    : path.join(__dirname, '../../assets/icon.png');
+  const iconUrl = 'file://' + iconPath.replace(/\\/g, '/');
+
   splashWindow = new BrowserWindow({
     width: 400,
     height: 400,
@@ -127,10 +132,15 @@ function createSplashWindow() {
     alwaysOnTop: true,
     resizable: false,
     skipTaskbar: true,
-    icon: path.join(__dirname, '../../assets/icon.png'),
+    icon: iconPath,
   });
 
-  splashWindow.loadFile(path.join(__dirname, 'splash.html'));
+  splashWindow.loadFile(path.join(__dirname, 'splash.html'), {
+    query: {
+      v: app.getVersion(),
+      icon: iconUrl
+    }
+  });
 
   splashWindow.on('closed', () => {
     splashWindow = null;

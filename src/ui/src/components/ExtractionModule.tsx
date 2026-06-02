@@ -4,7 +4,7 @@ import { useModuleState } from '../contexts/AppStateContext';
 
 interface BulkResult {
   domain: string;
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'pending' | 'processing' | 'downloading';
   message: string;
 }
 
@@ -27,7 +27,7 @@ interface ExtractionModuleProps {
 }
 
 const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
-  const { config, runExtractionBatch, progressEvents, getExtractionStatus } = useIpc();
+  const { config, runExtractionBatch, progressEvents, getExtractionStatus, getDominiosProcesados } = useIpc();
 
   const [extState, setExtState] = useModuleState('extraction');
   const [currentDomain, setCurrentDomain] = useState<string>('');
@@ -118,7 +118,7 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
     const handleStateChanged = (state: any) => {
       const patches: Partial<import('../contexts/AppStateContext').ModuleOperationState> = {};
 
-      setCurrentDomain(state.currentDomain || '');
+      setCurrentDomain(state.isRunning ? (state.currentDomain || '') : '');
       patches.progress = { current: state.currentProgress || 0, total: state.totalDomains || 100 };
       if (state.totalDomains > 0) {
         patches.statusMessage = state.currentDomain
@@ -148,7 +148,7 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
         ...prev,
         logs: (() => {
           const prevLogs = prev.logs || [];
-          const shouldReplace = message.includes('Descargando') || message.includes('%');
+          const shouldReplace = message.includes('Descargando') || message.includes('Trasladando') || message.includes('%');
           if (shouldReplace && prevLogs.length > 0) {
             const next = [...prevLogs];
             next[next.length - 1] = { message, type, timestamp: data.timestamp || Date.now() };
@@ -180,7 +180,7 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
 
       // Forward legacy — ya no pinta en Layout, pero se mantiene por si algún módulo lo escucha
       if (onLog) {
-        const shouldReplace = message.includes('Descargando') || message.includes('%');
+        const shouldReplace = message.includes('Descargando') || message.includes('Trasladando') || message.includes('%');
         onLog(message, type, 'extraction', shouldReplace ? { replaceLast: true } : undefined);
       }
     };
@@ -228,9 +228,44 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
     setExtState(prev => ({ ...prev, selectedAccount: accountName, selectedCloud: '', results: [] }));
   }, [setExtState]);
 
-  const handleCloudChange = useCallback((cloudName: string) => {
-    setExtState(prev => ({ ...prev, selectedCloud: cloudName, results: [] }));
-  }, [setExtState]);
+  const handleCloudChange = useCallback(
+    async (cloudName: string) => {
+      setExtState(prev => ({ ...prev, selectedCloud: cloudName, results: [] }));
+
+      if (!cloudName) {
+        setExtState(prev => ({ ...prev, domainList: '' }));
+        return;
+      }
+
+      if (extState.selectedAccount) {
+        try {
+          const result = await getDominiosProcesados(extState.selectedAccount, cloudName);
+          if (result.success && Array.isArray(result.dominios)) {
+            const domainsText = result.dominios
+              .map((d: unknown) => {
+                if (typeof d === 'object' && d !== null && 'dominio' in d) {
+                  const dom = (d as Record<string, unknown>).dominio;
+                  return typeof dom === 'string' ? dom : '';
+                }
+                return '';
+              })
+              .filter((d): d is string => d.length > 0)
+              .join('\n');
+
+            setExtState(prev => {
+              if (prev.selectedAccount === extState.selectedAccount && prev.selectedCloud === cloudName) {
+                return { ...prev, domainList: domainsText };
+              }
+              return prev;
+            });
+          }
+        } catch (error) {
+          console.error('Error al obtener dominios procesados:', error);
+        }
+      }
+    },
+    [extState.selectedAccount, getDominiosProcesados, setExtState]
+  );
 
   const handleExtract = useCallback(async () => {
     if (!extState.selectedAccount || !extState.selectedCloud || domains.length === 0) return;
@@ -273,7 +308,12 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
       setExtState(prev => ({ ...prev, statusMessage: `Error crítico: ${error.message}` }));
     } finally {
       setCurrentDomain('');
-      setExtState(prev => ({ ...prev, loading: false }));
+      setExtState(prev => {
+        const cleanResults = (prev.results || []).map((r: any) => 
+          r.status === 'processing' ? { ...r, status: 'error', message: 'Cancelado/Fallido' } : r
+        );
+        return { ...prev, loading: false, results: cleanResults };
+      });
     }
   }, [extState.selectedAccount, extState.selectedCloud, domains, clouds, runExtractionBatch, onLog, setExtState]);
 
@@ -369,7 +409,7 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
                 <div className="bar__fill bar__fill--accent" style={{ width: `${displayProgress}%` }} />
               </div>
             </div>
-            {currentDomain && (
+            {extState.loading && currentDomain && (
               <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
                 <span className="spinner" />
                 <span>Extrayendo: <span className="font-mono" style={{ color: 'var(--text-secondary)' }}>{currentDomain}</span></span>
@@ -422,33 +462,57 @@ const ExtractionModule: React.FC<ExtractionModuleProps> = ({ onLog }) => {
           )}
 
           <div className="space-y-1 max-h-60 overflow-y-auto scrollbar-thin">
-            {extState.results.map((r, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 py-2 px-3 rounded-md text-xs"
-                style={{
-                  backgroundColor: r.status === 'success' ? 'oklch(0.5 0.15 150 / 0.08)' : 'oklch(0.45 0.18 25 / 0.1)',
-                }}
-              >
-                <svg
-                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                  strokeLinecap="round" strokeLinejoin="round"
-                  style={{ color: r.status === 'success' ? 'var(--color-success)' : 'var(--color-error)', flexShrink: 0 }}
+            {extState.results.map((r, i) => {
+              const isSuccess = r.status === 'success';
+              const isError = r.status === 'error';
+              const isProcessing = r.status === 'processing' || r.status === 'downloading';
+              const isPending = r.status === 'pending';
+
+              let bgColor = 'oklch(0.5 0 0 / 0.02)';
+              let textColor = 'var(--text-muted)';
+              
+              if (isSuccess) {
+                bgColor = 'oklch(0.5 0.15 150 / 0.08)';
+                textColor = 'var(--color-success)';
+              } else if (isError) {
+                bgColor = 'oklch(0.45 0.18 25 / 0.1)';
+                textColor = 'var(--color-error)';
+              } else if (isProcessing) {
+                bgColor = 'oklch(0.6 0.12 200 / 0.08)'; // Light blue
+                textColor = 'var(--color-info)'; // info color (blue/cyan)
+              }
+
+              return (
+                <div
+                  key={i}
+                  className="flex items-center gap-3 py-2 px-3 rounded-md text-xs"
+                  style={{ backgroundColor: bgColor }}
                 >
-                  {r.status === 'success' ? (
-                    <polyline points="20 6 9 17 4 12" />
-                  ) : (
-                    <>
+                  {isProcessing && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 1.5, flexShrink: 0 }} />}
+                  {isSuccess && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--color-success)', flexShrink: 0 }}>
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                  )}
+                  {isError && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--color-error)', flexShrink: 0 }}>
                       <circle cx="12" cy="12" r="10" />
                       <line x1="15" y1="9" x2="9" y2="15" />
                       <line x1="9" y1="9" x2="15" y2="15" />
-                    </>
+                    </svg>
                   )}
-                </svg>
-                <span className="font-mono font-medium" style={{ color: 'var(--text-secondary)' }}>{r.domain}</span>
-                <span style={{ color: r.status === 'success' ? 'var(--color-success)' : 'var(--color-error)' }}>{r.message}</span>
-              </div>
-            ))}
+                  {isPending && (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                      <circle cx="12" cy="12" r="10" />
+                      <line x1="12" y1="8" x2="12" y2="12" />
+                      <line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                  )}
+                  <span className="font-mono font-medium" style={{ color: 'var(--text-secondary)' }}>{r.domain}</span>
+                  <span style={{ color: textColor }}>{r.message}</span>
+                </div>
+              );
+            })}
           </div>
           <div className="mt-3 pt-3 border-t flex gap-4 text-xs" style={{ borderTopColor: 'var(--border-default)', color: 'var(--text-muted)' }}>
             <span>Total: {extState.results.length}</span>

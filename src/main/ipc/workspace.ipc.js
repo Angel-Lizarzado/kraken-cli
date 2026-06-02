@@ -142,6 +142,7 @@ function registerWorkspaceHandlers(ipcMain, mainWindow) {
     try {
       const workspaceManager = getWorkspaceManager();
       await workspaceManager.initialize();
+      workspaceManager._invalidateDominiosCache(accountName, cloudName);
       const dominios = await workspaceManager.getDominiosProcesados(accountName, cloudName);
       return { success: true, dominios: dominios };
     } catch (error) {
@@ -215,6 +216,26 @@ function registerWorkspaceHandlers(ipcMain, mainWindow) {
     }
 
     return { success: true, path: selected };
+  });
+
+  // ── Selector de archivo nativo ────────────────────────────────────────────────
+  // Abre el diálogo de selección de archivo del OS.
+  // Retorna { success: true, filePath: string } o { success: false, canceled: true }.
+  // Usado desde CmsReconstructorModule para seleccionar el ZIP de Elementor Pro.
+  ipcMain.handle('dialog:open-file', async (_event, { title, filters } = {}) => {
+    const { dialog } = require('electron');
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: title || 'Seleccionar archivo',
+      properties: ['openFile'],
+      filters: filters || [{ name: 'All Files', extensions: ['*'] }],
+      buttonLabel: 'Seleccionar',
+    });
+
+    if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+      return { success: false, canceled: true };
+    }
+
+    return { success: true, filePath: result.filePaths[0] };
   });
 }
 

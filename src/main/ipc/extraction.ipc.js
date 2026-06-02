@@ -6,21 +6,23 @@ const { getExtractionService } = require('../../services/extraction-service');
 const { getProgressEmitter } = require('../../services/progress-emitter');
 const { getWorkspaceManager } = require('../../services/workspace-manager');
 const { getAppStateManager } = require('../state/AppStateManager');
-const { getConfigManager } = require('../../services/config-manager');
 const { getStandardEmitter } = require('../../services/standard-emitter');
 const { verifyKillSwitch } = require('../utils/security');
 
 const EMIT = getStandardEmitter('extraction');
+let isExtracting = false;
 
 function registerExtractionHandlers(ipcMain, mainWindow, scope) {
   const { isOperationRunning } = scope;
 
   // Get current extraction state (for UI restoration on mount)
+  ipcMain.removeHandler('get-extraction-status');
   ipcMain.handle('get-extraction-status', async () => {
     return getAppStateManager().getState('extraction');
   });
 
   // Clear extraction results
+  ipcMain.removeHandler('module:clear-results');
   ipcMain.handle('module:clear-results', async () => {
     const appState = getAppStateManager();
     const state = appState.getState('extraction');
@@ -30,10 +32,12 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
   });
 
   // Run batch extraction
+  ipcMain.removeHandler('extraction:run-batch');
   ipcMain.handle('extraction:run-batch', async (event, { accountName, cloudName, domains }) => {
-    if (isOperationRunning.value) {
+    if (isExtracting || isOperationRunning.value) {
       return { success: false, error: '[COLA] Ya hay una operación en curso. Espere a que finalice.' };
     }
+    isExtracting = true;
     isOperationRunning.value = true;
 
     try {
@@ -43,6 +47,8 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
       const extractionService = getExtractionService();
       const progressEmitter = getProgressEmitter();
       const appState = getAppStateManager();
+      const workspaceManager = getWorkspaceManager();
+      await workspaceManager.initialize();
 
       // RESET antes de correr — evita acumulación de resultados/logs de corridas anteriores
       appState.resetModuleState('extraction');
@@ -57,20 +63,34 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
         domainsQueue: domains,
         batchAccountName: accountName,
         batchCloudName: cloudName,
+        results: domains.map(d => ({ domain: d, status: 'pending', message: 'En cola...' })),
       });
 
       EMIT.info(`Preparando lote de ${domains.length} dominios...`);
-    sendExtractionLog('Preparando lote de extracción...', 'info');
-
-      // ── Inyectar pending list en AppStateManager ──
-      appState.update('extraction', {
-        results: domains.map(d => ({ domain: d, status: 'pending', message: 'En cola...' })),
-      });
+      sendExtractionLog('Preparando lote de extracción...', 'info');
       event.sender.send('extraction:state-changed', appState.getState('extraction'));
       await new Promise(r => setTimeout(r, 150));
 
       const batchResults = [];
 
+      // Helper para actualizar en tiempo real el estado de un dominio en el AppState e IPC
+      const updateDomainState = (domain, status, message) => {
+        const st = appState.getState('extraction');
+        if (st && Array.isArray(st.results)) {
+          const idx = st.results.findIndex(r => r.domain === domain);
+          if (idx >= 0) {
+            st.results[idx] = { domain, status, message };
+          } else {
+            st.results.push({ domain, status, message });
+          }
+          appState.update('extraction', { results: st.results });
+        }
+        event.sender.send('extraction:state-changed', appState.getState('extraction'));
+        // También emitimos domain-process-result para compatibilidad en frontend
+        event.sender.send('domain-process-result', { module: 'EXTRACT', domain, status, message });
+      };
+
+      // Bucle secuencial estricto
       for (let i = 0; i < domains.length; i++) {
         const domain = domains[i];
 
@@ -80,8 +100,43 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
           currentProgress: Math.round((i / domains.length) * 100),
           currentMessage: `[EXTRACCIÓN] Iniciando: ${domain}`,
         });
-        sendExtractionLog(`[EXTRACCIÓN] Iniciando: ${domain}`, 'info');
+        sendExtractionLog(`[EXTRACCIÓN] Iniciando: ${domain}`, 'info', domain);
         event.sender.send('extraction:state-changed', appState.getState('extraction'));
+
+        // ── 2. Idempotencia: Verificar estado previo en el workspace ──
+        // Forzar recarga del JSON para evitar caché obsoleta en iteraciones secuenciales
+        workspaceManager._invalidateDominiosCache(accountName, cloudName);
+        const currentDominiosProcesados = await workspaceManager.getDominiosProcesados(accountName, cloudName);
+        const found = currentDominiosProcesados.find(d => d.dominio === domain);
+        
+        let physicalFilesExist = false;
+        try {
+          const safeDomain = extractionService.getSafeDomainPath(domain);
+          const domainPath = workspaceManager.getDomainPath(accountName, cloudName, safeDomain);
+          
+          const fs = require('fs');
+          if (fs.existsSync(domainPath)) {
+            const items = fs.readdirSync(domainPath);
+            const filesExist = items.some(item => item === `${safeDomain}.tar.gz` || item === `${safeDomain}.tar` || item === `${safeDomain}.zip`);
+            const dbExists = items.some(item => item === `${safeDomain}.sql`);
+            physicalFilesExist = filesExist && dbExists;
+          }
+        } catch (err) {
+          console.warn(`[PHYSICAL-CHECK-WARN] Error al verificar archivos físicos para ${domain}:`, err.message);
+        }
+
+        if (found && found.extractionStatus === 'success' && physicalFilesExist) {
+          console.log(`[SKIP] Dominio ${domain} ya extraído en corrida anterior y verificado físicamente.`);
+          sendExtractionLog(`[SKIP] Dominio ${domain} ya extraído en corrida anterior.`, 'info', domain);
+          
+          updateDomainState(domain, 'success', 'Saltado (ya extraído)');
+          
+          batchResults.push({ domain, success: true, skipped: true });
+          continue;
+        }
+
+        // Emitir estado processing para iniciar
+        updateDomainState(domain, 'processing', 'Ejecutando extracción...');
 
         const taskId = progressEmitter.createTask('extraction', domain, `[EXTRACCIÓN] Iniciando: ${domain}`);
 
@@ -91,8 +146,10 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
               currentProgress: progressData.progress ?? 0,
               currentMessage: progressData.message || '',
             });
-            sendExtractionLog(progressData.message || '', progressData.progress === 100 ? 'success' : 'info');
-            event.sender.send('extraction:state-changed', appState.getState('extraction'));
+            sendExtractionLog(progressData.message || '', progressData.progress === 100 ? 'success' : 'info', domain);
+            
+            // Actualizar mensaje de la descarga en el resultado de la tabla en tiempo real
+            updateDomainState(domain, 'downloading', progressData.message || 'Descargando...');
           }
         };
 
@@ -102,21 +159,35 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
           const result = await extractionService.extractWordPress(accountName, cloudName, domain, taskId);
           batchResults.push({ domain, success: true, result });
 
-          const state = appState.getState('extraction');
-          state.results.push({ domain, status: 'success', message: 'Extracción completada' });
-          appState.update('extraction', { results: state.results });
-          sendExtractionLog(`[OK] ${domain}: Extracción completada`, 'success');
-          event.sender.send('domain-process-result', { module: 'EXTRACT', domain, status: 'success', message: 'Extracción completada' });
+          // ── Guardar extractionStatus: 'success' de forma atómica en el JSON ──
+          await workspaceManager.updateDominiosProcesados(accountName, cloudName, [{
+            dominio: domain,
+            extractionStatus: 'success',
+            errorReason: null,
+            lastExtractionRun: new Date().toISOString()
+          }]);
+
+          sendExtractionLog(`[OK] ${domain}: Extracción completada`, 'success', domain);
+          updateDomainState(domain, 'success', 'Extracción completada');
         } catch (error) {
           console.error(`[EXTRACCIÓN] Falló ${domain}:`, error.message);
           EMIT.error(`Falló ${domain}: ${error.message}`, domain);
           batchResults.push({ domain, success: false, error: error.message });
 
-          const state = appState.getState('extraction');
-          state.results.push({ domain, status: 'error', message: error.message });
-          appState.update('extraction', { results: state.results });
-          sendExtractionLog(`[ERROR] ${domain}: ${error.message}`, 'error');
-          event.sender.send('domain-process-result', { module: 'EXTRACT', domain, status: 'error', message: error.message });
+          // ── Guardar extractionStatus: 'failed' en el JSON del Workspace ──
+          try {
+            await workspaceManager.updateDominiosProcesados(accountName, cloudName, [{
+              dominio: domain,
+              extractionStatus: 'failed',
+              errorReason: error.message,
+              lastExtractionRun: new Date().toISOString()
+            }]);
+          } catch (writeErr) {
+            console.warn('[WORKSPACE] Error guardando estado de fallo:', writeErr.message);
+          }
+
+          sendExtractionLog(`[ERROR] ${domain}: ${error.message}`, 'error', domain);
+          updateDomainState(domain, 'error', error.message);
         } finally {
           progressEmitter.off('progress', progressHandler);
         }
@@ -126,6 +197,7 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
 
       appState.update('extraction', {
         isRunning: false,
+        currentDomain: '',
         currentProgress: 100,
         currentMessage: 'Extracción masiva finalizada',
       });
@@ -147,11 +219,13 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
       event.sender.send('extraction:state-changed', getAppStateManager().getState('extraction'));
       return { success: false, error: error.message };
     } finally {
+      isExtracting = false;
       isOperationRunning.value = false;
     }
   });
 
   // Check extraction status for a domain
+  ipcMain.removeHandler('extraction:check-status');
   ipcMain.handle('extraction:check-status', async (event, { accountName, cloudName, domain }) => {
     try {
       const workspaceManager = getWorkspaceManager();
@@ -165,16 +239,19 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
   });
 
   // Extract-specific log helpers
-  function sendExtractionLog(message, type = 'info') {
+  function sendExtractionLog(message, type = 'info', domain = '') {
+    EMIT.emit(type, message, domain);
     const appState = getAppStateManager();
     if (!message) return;
     const state = appState.getState('extraction');
     const logs = state.recentLogs || [];
     const isDownload = message.startsWith('Descargando:');
-    if (isDownload) {
+    const isTransfer = message.startsWith('Trasladando');
+    if (isDownload || isTransfer) {
       let replaced = false;
+      const prefix = isDownload ? 'Descargando:' : 'Trasladando';
       for (let i = logs.length - 1; i >= 0; i--) {
-        if (logs[i].message.startsWith('Descargando:')) {
+        if (logs[i].message.startsWith(prefix)) {
           logs[i] = { message, timestamp: Date.now() };
           replaced = true;
           break;

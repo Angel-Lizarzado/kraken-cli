@@ -5,6 +5,7 @@
 const { getConfigManager } = require('../../services/config-manager');
 const { getSshService }    = require('../../services/ssh-service');
 const { runHealthCheck }   = require('../../services/health-service');
+const { repairDomains }    = require('../../services/health/healService');
 
 // ── Helpers ──
 
@@ -127,6 +128,61 @@ function registerHealthHandlers(ipcMain, mainWindow) {
       return { success: true, message: 'Escaneo cancelado.' };
     }
     return { success: true, message: 'No hay escaneo activo.' };
+  });
+  /**
+   * health:heal-domain — Repara un único dominio con `plesk repair fs` y `plesk repair web`.
+   * Input: { serverName: string, domain: string }
+   */
+  ipcMain.handle('health:heal-domain', async (event, { serverName, domain }) => {
+    try {
+      const config = await getConfig();
+      const serverConfig = findDestinationServer(config, serverName);
+      const sshService = getSshService();
+
+      const results = await repairDomains(
+        sshService,
+        serverConfig.sshCredentials,
+        [domain],
+        (progress) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('health:heal-progress', progress);
+          }
+        }
+      );
+
+      return { success: true, results };
+    } catch (error) {
+      console.error('[HEAL] Error al reparar dominio:', error.message);
+      return { success: false, error: error.message };
+    }
+  });
+
+  /**
+   * health:heal-batch — Repara múltiples dominios fallidos.
+   * Input: { serverName: string, domains: string[] }
+   */
+  ipcMain.handle('health:heal-batch', async (event, { serverName, domains }) => {
+    try {
+      const config = await getConfig();
+      const serverConfig = findDestinationServer(config, serverName);
+      const sshService = getSshService();
+
+      const results = await repairDomains(
+        sshService,
+        serverConfig.sshCredentials,
+        domains,
+        (progress) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('health:heal-progress', progress);
+          }
+        }
+      );
+
+      return { success: true, results };
+    } catch (error) {
+      console.error('[HEAL] Error al reparar dominios:', error.message);
+      return { success: false, error: error.message };
+    }
   });
 }
 

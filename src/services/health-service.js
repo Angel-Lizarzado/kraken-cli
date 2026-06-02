@@ -9,10 +9,16 @@ const { URL } = require('url');
 // ── Constants ──
 
 const MAX_CONCURRENCY = 15;
-const TIMEOUT_MS      = 15000;
+const TIMEOUT_MS      = 60000; // 60s — dominios lentos en Plesk pueden tardar mucho
 const USER_AGENT      = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// DNS error codes that indicate the domain doesn't resolve
+// Categoriza la velocidad de respuesta en 4 niveles
+function categorizeSpeed(ms) {
+  if (ms < 1000)  return 'optimal';  // < 1s
+  if (ms < 5000)  return 'slow';     // 1-5s
+  if (ms < 60000) return 'critical'; // 5-60s
+  return 'timeout';                   // > 60s
+}
 const DNS_ERROR_CODES = new Set([
   'ENOTFOUND',
   'EAI_AGAIN',
@@ -21,8 +27,9 @@ const DNS_ERROR_CODES = new Set([
   'EAI_NONAME',
 ]);
 
-// ── Semaphore for controlled concurrency ──
+// DNS error codes that indicate the domain doesn't resolve
 
+// ── Semaphore for controlled concurrency ──
 class Semaphore {
   constructor(max) {
     this.max = max;
@@ -91,6 +98,7 @@ function checkDomain(domain) {
             code,
             message: `${code} ${res.statusMessage || ''}`.trim(),
             time: elapsed,
+            speed: categorizeSpeed(elapsed),
           });
         },
       );
@@ -101,8 +109,9 @@ function checkDomain(domain) {
           domain,
           status: 'error',
           code: null,
-          message: 'Timeout (>15s)',
+          message: 'Timeout (>60s)',
           time: Date.now() - start,
+          speed: 'timeout',
         });
       });
 
@@ -118,6 +127,7 @@ function checkDomain(domain) {
             code: null,
             message: `DNS: ${errCode}`,
             time: elapsed,
+            speed: 'timeout',
           });
           return;
         }
@@ -134,6 +144,7 @@ function checkDomain(domain) {
           code: null,
           message: err.message || 'Error de conexión',
           time: elapsed,
+          speed: categorizeSpeed(elapsed),
         });
       });
 

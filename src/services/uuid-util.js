@@ -12,6 +12,9 @@ class UuidUtil {
    * Generate a UUID v5 (namespace-based)
    * Useful for generating consistent UUIDs for the same input
    */
+  // ⚠️ LEGACY: El namespace 'clinmedia-ops' NO debe cambiarse.
+  // Modificarlo rompería la consistencia de los UUIDs históricos generados
+  // en bases de datos y logs existentes. Es un valor técnico, no una marca.
   static generateFromName(name, namespace = 'clinmedia-ops') {
     // Create a namespace UUID from the namespace string
     const namespaceUuid = uuidv5(namespace, uuidv5.DNS);

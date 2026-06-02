@@ -38,6 +38,7 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
   const [stepStates, setStepStates] = useState<Record<string, StepState>>(
     () => Object.fromEntries(DEPLOY_STEPS.map(s => [s.id, 'pending']))
   );
+  const [isStopping, setIsStopping] = useState(false);
 
   const resultsRef = useRef<BulkResult[]>(depState.results as BulkResult[]);
   resultsRef.current = depState.results as BulkResult[];
@@ -129,6 +130,10 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
         }
       }
 
+      if (!state.isRunning) {
+        setIsStopping(false);
+      }
+
       setDepState(prev => ({ ...prev, ...patches }));
     };
 
@@ -178,88 +183,75 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
         onLog(message, type, 'migration');
       }
 
-      // Mapeo de resultados: si el log contiene [OK] o [ERROR], actualizar results en vivo
-      const okMatch = message.match(/^\[OK\]\s+(\S+):\s*(.*)$/);
-      const errMatch = message.match(/^\[ERROR\]\s+(\S+):\s*(.*)$/);
-      if (okMatch) {
-        const domain = okMatch[1];
-        const detail = okMatch[2];
-        const currentResults = resultsRef.current;
-        const exists = currentResults.find(r => r.domain === domain);
-        let nextResults: typeof currentResults;
-        if (exists) {
-          nextResults = currentResults.map(r => r.domain === domain ? { domain, status: 'success' as const, message: detail } : r) as typeof currentResults;
-        } else {
-          nextResults = [...currentResults, { domain, status: 'success' as const, message: detail }] as typeof currentResults;
-        }
-        setDepState(prev => ({ ...prev, results: nextResults }));
-      } else if (errMatch) {
-        const domain = errMatch[1];
-        const detail = errMatch[2];
-        const currentResults = resultsRef.current;
-        const exists = currentResults.find(r => r.domain === domain);
-        let nextResults: typeof currentResults;
-        if (exists) {
-          nextResults = currentResults.map(r => r.domain === domain ? { domain, status: 'error' as const, message: detail } : r) as typeof currentResults;
-        } else {
-          nextResults = [...currentResults, { domain, status: 'error' as const, message: detail }] as typeof currentResults;
-        }
-        setDepState(prev => ({ ...prev, results: nextResults }));
-      } else {
-        setDepState(prev => ({ ...prev, statusMessage: message }));
-      }
+      setDepState(prev => ({ ...prev, statusMessage: message }));
     };
 
     api.receive('deployment:state-changed', handleStateChanged);
     api.receive('deployment:log', handleDeploymentLog);
-    api.receive('domain-process-result', (data: { module: string; domain: string; status: string; message: string }) => {
-      if (data.module !== 'MIGRATE') return;
-      resultsRef.current = (resultsRef.current || [] as any[]).map((item: any) =>
-        item.domain === data.domain
-          ? { domain: data.domain, status: data.status, message: data.message }
-          : item
-      );
-      setDepState(prev => ({ ...prev, results: resultsRef.current as any }));
-    });
+    
+    const handleStart = (payload: any) => {
+      setDepState(prev => ({
+        ...prev,
+        results: prev.results.map((r: any) => 
+          r.domain === payload.domain 
+            ? { ...r, status: 'running', message: 'Procesando...' } 
+            : r
+        )
+      }));
+    };
+
+    const handleSuccess = (payload: any) => {
+      setDepState(prev => ({
+        ...prev,
+        results: prev.results.map((r: any) => 
+          r.domain === payload.domain 
+            ? { ...r, status: payload.message?.includes('Omitido') ? 'skipped' : 'success', message: payload.message || 'Completado' } 
+            : r
+        )
+      }));
+    };
+
+    const handleError = (payload: any) => {
+      setDepState(prev => ({
+        ...prev,
+        results: prev.results.map((r: any) => 
+          r.domain === payload.domain 
+            ? { ...r, status: 'error', message: payload.message || payload.error || 'Error desconocido' } 
+            : r
+        )
+      }));
+    };
+
+    const handleWarning = (payload: any) => {
+      setDepState(prev => ({
+        ...prev,
+        results: prev.results.map((r: any) => 
+          r.domain === payload.domain 
+            ? { ...r, status: 'warning', message: payload.message || 'Faltan archivos' } 
+            : r
+        )
+      }));
+    };
+
+    api.receive('migrate-domain-start', handleStart);
+    api.receive('migrate-domain-success', handleSuccess);
+    api.receive('migrate-domain-error', handleError);
+    api.receive('migrate-domain-warning', handleWarning);
 
     // Cleanup: remove ALL listeners for deployment channels to prevent memory leaks
     return () => {
       if (api) {
         api.removeAllListeners('deployment:state-changed');
         api.removeAllListeners('deployment:log');
+        api.removeAllListeners('migrate-domain-start');
+        api.removeAllListeners('migrate-domain-success');
+        api.removeAllListeners('migrate-domain-error');
+        api.removeAllListeners('migrate-domain-warning');
       }
     };
   }, []);
 
-  // Autoload: when sourceCloud changes, fetch dominios_procesados.json and fill the TextArea
-  useEffect(() => {
-    if (!depState.selectedAccount || !depState.selectedCloud) {
-      setDepState(prev => ({ ...prev, domainList: '' }));
-      return;
-    }
-
-    let cancelled = false;
-    const loadDominios = async () => {
-      setDepState(prev => ({ ...prev, loading: true }));
-      try {
-        const result = await getDominiosProcesados(depState.selectedAccount, depState.selectedCloud);
-        if (cancelled) return;
-        if (result.success && result.dominios && result.dominios.length > 0) {
-          const dominios = result.dominios.map((d: any) => d.dominio || d.name || d).filter(Boolean);
-          setDepState(prev => ({ ...prev, domainList: dominios.join('\n') }));
-        } else {
-          setDepState(prev => ({ ...prev, domainList: '' }));
-        }
-      } catch {
-        if (!cancelled) setDepState(prev => ({ ...prev, domainList: '' }));
-      } finally {
-        if (!cancelled) setDepState(prev => ({ ...prev, loading: false }));
-      }
-    };
-
-    loadDominios();
-    return () => { cancelled = true; setDepState(prev => ({ ...prev, loading: false })); };
-  }, [depState.selectedAccount, depState.selectedCloud, getDominiosProcesados]);
+  // Autoload de dominios procesados se realiza directamente en handleSourceCloudChange
 
   // Mostrar TODAS las cuentas que existen en config, incluso si originClouds está vacío
   const accountsWithClouds = useMemo(() =>
@@ -284,9 +276,51 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
     setDepState(prev => ({ ...prev, selectedAccount: accountName, selectedCloud: '', results: [] }));
   }, []);
 
-  const handleSourceCloudChange = useCallback((cloudName: string) => {
-    setDepState(prev => ({ ...prev, selectedCloud: cloudName, results: [] }));
-  }, []);
+  const handleSourceCloudChange = useCallback(
+    async (cloudName: string) => {
+      setDepState(prev => ({ ...prev, selectedCloud: cloudName, results: [] }));
+
+      if (!cloudName) {
+        setDepState(prev => ({ ...prev, domainList: '' }));
+        return;
+      }
+
+      if (depState.selectedAccount) {
+        try {
+          const result = await getDominiosProcesados(depState.selectedAccount, cloudName);
+          if (result.success && Array.isArray(result.dominios)) {
+            const dominiosText = result.dominios
+              .map((d: unknown) => {
+                if (typeof d === 'object' && d !== null && 'dominio' in d) {
+                  const dom = (d as Record<string, unknown>).dominio;
+                  return typeof dom === 'string' ? dom : '';
+                }
+                return '';
+              })
+              .filter((d): d is string => d.length > 0)
+              .join('\n');
+
+            setDepState(prev => {
+              if (prev.selectedAccount === depState.selectedAccount && prev.selectedCloud === cloudName) {
+                return { ...prev, domainList: dominiosText };
+              }
+              return prev;
+            });
+          } else {
+            setDepState(prev => {
+              if (prev.selectedAccount === depState.selectedAccount && prev.selectedCloud === cloudName) {
+                return { ...prev, domainList: '' };
+              }
+              return prev;
+            });
+          }
+        } catch (error) {
+          console.error('Error al obtener dominios procesados:', error);
+        }
+      }
+    },
+    [depState.selectedAccount, getDominiosProcesados, setDepState]
+  );
 
   const handlePleskServerChange = useCallback((serverName: string) => {
     setPleskServerName(serverName);
@@ -308,6 +342,7 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
     }));
     setTotalDomains(domains.length);
     setCurrentDomain(domains[0]);
+    setIsStopping(false);
 
     try {
       const result = await runDeploymentBatch(
@@ -338,9 +373,15 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
       setDepState(prev => ({ ...prev, statusMessage: `Error crítico: ${error.message}` }));
     } finally {
       setCurrentDomain('');
-      setDepState(prev => ({ ...prev, loading: false }));
+      setDepState(prev => {
+        const cleanResults = (prev.results || []).map((r: any) => 
+          r.status === 'processing' ? { ...r, status: 'error', message: 'Cancelado/Fallido' } : r
+        );
+        return { ...prev, loading: false, results: cleanResults };
+      });
+      setIsStopping(false);
     }
-  }, [pleskServerName, depState.selectedAccount, depState.selectedCloud, domains, allPleskServers, runDeploymentBatch]);
+  }, [pleskServerName, depState.selectedAccount, depState.selectedCloud, domains, allPleskServers, runDeploymentBatch, forceClean]);
 
   const canDeploy = pleskServerName && depState.selectedAccount && depState.selectedCloud && domains.length > 0 && !depState.loading;
 
@@ -573,21 +614,21 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
                     <td className="py-2 px-3 font-mono" style={{ color: 'var(--text-secondary)' }}>{(r.domain as any)?.dominio || (r.domain as any)?.domain || r.domain}</td>
                     <td className="py-2 px-3">
                       <span
-                        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                        className="inline-flex items-center gap-1.5 font-semibold"
                         style={{
-                          backgroundColor:
-                            r.status === 'success' ? 'oklch(0.5 0.15 150 / 0.12)' :
-                              r.status === 'completed_with_warnings' || r.status === 'warning' ? 'oklch(0.5 0.12 80 / 0.12)' :
-                                'oklch(0.45 0.18 25 / 0.12)',
                           color:
                             r.status === 'success' ? 'var(--color-success)' :
-                              r.status === 'completed_with_warnings' || r.status === 'warning' ? 'var(--color-warning)' :
-                                'var(--color-error)',
+                              r.status === 'running' ? 'var(--color-accent)' :
+                                r.status === 'pending' ? 'var(--text-muted)' :
+                                  r.status === 'skipped' ? 'var(--color-accent)' :
+                                    r.status === 'queued' ? 'var(--text-muted)' :
+                                      r.status === 'completed_with_warnings' || r.status === 'warning' ? 'var(--color-warning)' :
+                                        'var(--color-error)',
                         }}
                       >
-                        {r.status === 'success' ? '✓' : r.status === 'completed_with_warnings' || r.status === 'warning' ? '⚠' : '✗'}
+                        {r.status === 'success' ? '✓' : r.status === 'running' ? <span className="spinner w-3 h-3" style={{ borderWidth: '1.5px', color: 'currentColor' }} /> : r.status === 'pending' ? '⏳' : r.status === 'skipped' ? '⏭' : r.status === 'queued' ? '⏳' : r.status === 'completed_with_warnings' || r.status === 'warning' ? '⚠' : '✗'}
                         {' '}
-                        {r.status === 'success' ? 'Exitoso' : r.status === 'completed_with_warnings' || r.status === 'warning' ? 'Con advertencias' : 'Error'}
+                        {r.status === 'success' ? 'Completado' : r.status === 'running' ? 'Procesando...' : r.status === 'pending' ? 'En cola' : r.status === 'skipped' ? 'Omitido' : r.status === 'queued' ? 'En cola' : r.status === 'completed_with_warnings' || r.status === 'warning' ? 'Con advertencias' : 'Error'}
                       </span>
                     </td>
                     <td className="py-2 px-3" style={{ color: 'var(--text-muted)' }}>{r.message}</td>
@@ -665,6 +706,33 @@ const DeploymentModule: React.FC<DeploymentModuleProps> = ({ onLog }) => {
               </>
             )}
           </button>
+          {depState.loading && (
+            <button
+              onClick={() => {
+                setIsStopping(true);
+                if (window.krakenAPI && window.krakenAPI.orquestador && window.krakenAPI.orquestador.detener) {
+                  window.krakenAPI.orquestador.detener();
+                }
+              }}
+              disabled={isStopping}
+              className="btn btn--secondary"
+              style={{ color: 'var(--color-error)', borderColor: 'var(--color-error)' }}
+            >
+              {isStopping ? (
+                <span className="flex items-center gap-2">
+                  <span className="spinner" style={{ borderColor: 'var(--color-error)', borderBottomColor: 'transparent' }} />
+                  Deteniendo...
+                </span>
+              ) : (
+                <>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="mr-2">
+                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                  </svg>
+                  Detener
+                </>
+              )}
+            </button>
+          )}
         </div>
         {depState.statusMessage && (
           <p className="mt-3 text-xs" style={{ color: 'var(--text-muted)' }}>{depState.statusMessage}</p>

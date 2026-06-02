@@ -1,20 +1,21 @@
 'use strict';
 
 /**
- * @file scalifylabs.ipc.js
- * @description Handlers IPC para el módulo ScalifyLabs.
+ * @file sourcesync.ipc.js
+ * @description Handlers IPC para el módulo SourceSync.
  *
  * Canales:
- *  - scalify:deploy          (invoke) → Inicia el despliegue completo orquestado.
+ *  - sourcesync:deploy          (invoke) → Inicia el despliegue completo orquestado.
  *  - config:get-github-token (invoke) → Devuelve el token GitHub guardado (obfuscado).
  *  - config:set-github-token (invoke) → Persiste el token GitHub en config.
  *
  * Evento emitido al renderer:
- *  - scalify:progreso        (send)   → Actualizaciones de progreso en tiempo real.
+ *  - sourcesync:progreso        (send)   → Actualizaciones de progreso en tiempo real.
  */
 
-const { getConfigManager } = require('../../services/config-manager');
-const { orchestrarDespliegue } = require('../../services/scalifylabs/deployOrchestrator');
+const { getConfigManager }  = require('../../services/config-manager');
+const { orchestrarDespliegue } = require('../../services/sourcesync/deployOrchestrator');
+const { getAppStateManager } = require('../state/AppStateManager');
 
 // ─── Helper: config garantizada ──────────────────────────────────────────────
 async function getConfig() {
@@ -33,7 +34,7 @@ function encontrarServidorDestino(config, serverName) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-function registerScalifylabsHandlers(ipcMain, mainWindow) {
+function registerSourceSyncHandlers(ipcMain, mainWindow) {
 
   // ── Obtener GitHub Token (obfuscado para UI) ──────────────────────────────
   ipcMain.handle('config:get-github-token', async () => {
@@ -47,7 +48,7 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
         : '****';
       return { success: true, token: raw, obfuscated };
     } catch (error) {
-      console.error('[SCALIFY:IPC] Error al leer GitHub token:', error.message);
+      console.error('[SOURCESYNC:IPC] Error al leer GitHub token:', error.message);
       return { success: false, error: error.message, token: '', obfuscated: '' };
     }
   });
@@ -66,7 +67,7 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
       cfg.github.apiToken = token.trim();
       await mgr.saveConfig();
 
-      console.log('[SCALIFY:IPC] GitHub API Token guardado correctamente.');
+      console.log('[SOURCESYNC:IPC] GitHub API Token guardado correctamente.');
 
       // Notificar UI del cambio de config
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -78,13 +79,18 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
 
       return { success: true };
     } catch (error) {
-      console.error('[SCALIFY:IPC] Error al guardar GitHub token:', error.message);
+      console.error('[SOURCESYNC:IPC] Error al guardar GitHub token:', error.message);
       return { success: false, error: error.message };
     }
   });
 
-  // ── Iniciar despliegue ScalifyLabs ────────────────────────────────────────
-  ipcMain.handle('scalify:deploy', async (event, params) => {
+  // ── Obtener estado actual de SourceSync (para hidratación al montar UI) ────────
+  ipcMain.handle('sourcesync:get-state', async () => {
+    return getAppStateManager().getState('sourcesync');
+  });
+
+  // ── Iniciar despliegue SourceSync ────────────────────────────────────────
+  ipcMain.handle('sourcesync:deploy', async (event, params) => {
     const {
       serverName,   // Nombre del servidor destino configurado en la app
       domain,       // Dominio Plesk a configurar
@@ -118,11 +124,34 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
       }
 
       // Notificar inicio al renderer
+      const appState = getAppStateManager();
+
+      // ── Registrar nueva ejecución en el log histórico ──────────────────────
+      const logEntry = {
+        id: `${domain}-${Date.now()}`,
+        domain,
+        serverName,
+        startedAt: Date.now(),
+        steps: [],
+        status: 'running', // 'running' | 'success' | 'error'
+      };
+
+      // Agregar al inicio del log (más reciente primero); FIFO — máximo 20
+      const existingLog = appState.getState('sourcesync')?.deploymentLog || [];
+      const newLog = [logEntry, ...existingLog.filter(e => e.domain !== domain || e.status !== 'running')].slice(0, 20);
+
+      appState.update('sourcesync', {
+        isRunning: true,
+        activeDomain: domain,
+        activeProgress: 0,
+        deploymentLog: newLog,
+      });
+
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('scalify:progreso', {
+        mainWindow.webContents.send('sourcesync:progreso', {
           paso: 'inicio',
           progreso: 0,
-          mensaje: `[SCALIFY] Conectando a ${servidorConfig.sshCredentials?.host || serverName}...`,
+          mensaje: `[SOURCESYNC] Conectando a ${servidorConfig.sshCredentials?.host || serverName}...`,
           domain,
         });
       }
@@ -155,10 +184,10 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
 
       if (resolvedKey) {
         sshOptions.privateKey = resolvedKey;
-        console.log(`[SCALIFY:SSH] Llave privada resuelta (${resolvedKey.substring(0, 30)}...)`);
+        console.log(`[SOURCESYNC:SSH] Llave privada resuelta (${resolvedKey.substring(0, 30)}...)`);
       } else if (creds.password) {
         sshOptions.password = creds.password;
-        console.log('[SCALIFY:SSH] Usando autenticación por password');
+        console.log('[SOURCESYNC:SSH] Usando autenticación por password');
       } else {
         throw new Error(
           'No se encontró llave SSH ni password. Verifica que exista una llave privada en ' +
@@ -170,14 +199,32 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
         sshOptions.passphrase = creds.passphrase;
       }
 
-      console.log(`[SCALIFY:SSH] Conectando a ${sshOptions.host}:${sshOptions.port} como "${sshOptions.username}"...`);
+      console.log(`[SOURCESYNC:SSH] Conectando a ${sshOptions.host}:${sshOptions.port} como "${sshOptions.username}"...`);
       await ssh.connect(sshOptions);
-      console.log(`[SCALIFY:IPC] Conexión SSH establecida con "${serverName}". Iniciando orquestación...`);
+      console.log(`[SOURCESYNC:IPC] Conexión SSH establecida con "${serverName}". Iniciando orquestación...`);
 
       // Construir callback de progreso que emite al renderer en tiempo real
+      // y actualiza el AppStateManager para persistencia entre tabs
       const onProgreso = (evento) => {
+        // Actualizar AppStateManager con el nuevo paso
+        const sl = appState.getState('sourcesync');
+        const log = sl?.deploymentLog || [];
+        const entryIdx = log.findIndex(e => e.id === logEntry.id);
+        if (entryIdx !== -1) {
+          log[entryIdx].steps.push({
+            paso: evento.paso || '',
+            progreso: evento.progreso ?? 0,
+            mensaje: evento.mensaje || '',
+            ts: Date.now(),
+          });
+          appState.update('sourcesync', {
+            activeProgress: evento.progreso ?? 0,
+            deploymentLog: [...log],
+          });
+        }
+
         if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('scalify:progreso', evento);
+          mainWindow.webContents.send('sourcesync:progreso', evento);
         }
       };
 
@@ -187,6 +234,21 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
         { domain, httpsUrl, repoOwner, repoName, githubToken, vincularGitHub, rama },
         onProgreso
       );
+
+      // Finalizar entrada del log
+      const slFinal = appState.getState('sourcesync');
+      const finalLog = slFinal?.deploymentLog || [];
+      const finalIdx = finalLog.findIndex(e => e.id === logEntry.id);
+      if (finalIdx !== -1) {
+        finalLog[finalIdx].status = resultado.exito ? 'success' : 'error';
+        finalLog[finalIdx].finishedAt = Date.now();
+      }
+      appState.update('sourcesync', {
+        isRunning: false,
+        activeDomain: '',
+        activeProgress: resultado.exito ? 100 : 0,
+        deploymentLog: [...finalLog],
+      });
 
       return {
         success: resultado.exito,
@@ -198,11 +260,24 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
       };
 
     } catch (error) {
-      console.error('[SCALIFY:IPC] Error en scalify:deploy:', error.message);
+      console.error('[SOURCESYNC:IPC] Error en sourcesync:deploy:', error.message);
+
+      // Marcar la entrada del log como error
+      try {
+        const appState = getAppStateManager();
+        const sl = appState.getState('sourcesync');
+        const log = sl?.deploymentLog || [];
+        const errEntry = log.find(e => e.domain === domain && e.status === 'running');
+        if (errEntry) {
+          errEntry.status = 'error';
+          errEntry.finishedAt = Date.now();
+        }
+        appState.update('sourcesync', { isRunning: false, activeProgress: 0, deploymentLog: [...log] });
+      } catch (_) { /* no crítico */ }
 
       // Notificar error al renderer
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('scalify:progreso', {
+        mainWindow.webContents.send('sourcesync:progreso', {
           paso: 'error-fatal',
           progreso: 0,
           mensaje: `[ERROR] ${error.message}`,
@@ -220,4 +295,4 @@ function registerScalifylabsHandlers(ipcMain, mainWindow) {
   });
 }
 
-module.exports = { registerScalifylabsHandlers };
+module.exports = { registerSourceSyncHandlers };

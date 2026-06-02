@@ -15,6 +15,7 @@ import DrawerLogs from './dashboard/DrawerLogs';
 import DrawerDangerZone from './dashboard/DrawerDangerZone';
 import ConfirmDialog from './dashboard/ConfirmDialog';
 import HealthCheckModal from './HealthCheckModal';
+import ServerCommandCenter from './dashboard/ServerCommandCenter';
 
 // ── Props ──
 interface DashboardProps {
@@ -90,6 +91,8 @@ const Dashboard: React.FC<DashboardProps> = ({
   // Caché de storageData por servidor para evitar doble llamada SSH
   const [storageCache, setStorageCache] = useState<Record<string, { estimatedSavings: string }>>({});
   const [healthCheckServer, setHealthCheckServer] = useState<string | null>(null);
+  // ── Command Center: servidor activo en vista de detalle ──
+  const [commandServer, setCommandServer] = useState<ServerType | null>(null);
 
   // ── Derived ──
   const totalServers = servers.length;
@@ -356,8 +359,9 @@ const Dashboard: React.FC<DashboardProps> = ({
   // ── Handlers ──
   const handleServerSelect = useCallback(
     (server: ServerType) => {
-      setSelectedServer(server);
-      setDrawerTab('Métricas');
+      // Opción A: mutar la vista al Command Center del servidor
+      setCommandServer(server);
+      setSelectedServer(null); // cerrar drawer si estaba abierto
       onServerSelect(server);
     },
     [onServerSelect],
@@ -482,7 +486,24 @@ const Dashboard: React.FC<DashboardProps> = ({
 
   // ── Render ──
   return (
-    <div className="space-y-6">
+    <AnimatePresence mode="wait">
+      {/* ── Command Center (full-screen detail) ── */}
+      {commandServer ? (
+        <ServerCommandCenter
+          key={`cc-${commandServer.name}`}
+          server={commandServer}
+          onBack={() => setCommandServer(null)}
+          onLog={onLog}
+        />
+      ) : (
+        <motion.div
+          key="dashboard"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.15 }}
+          className="space-y-6"
+        >
       {/* ── Header ── */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
@@ -765,7 +786,9 @@ const Dashboard: React.FC<DashboardProps> = ({
         serverName={healthCheckServer || ''}
         onLog={onLog}
       />
-    </div>
+      </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 

@@ -1,9 +1,9 @@
-/**
- * @module scalifylabs/domainManager
+﻿/**
+ * @module SOURCESYNC/domainManager
  * @description Gestiona la creación automática de suscripciones en Plesk.
  *
  * Reglas de negocio (hardcoded por diseño):
- *  - El owner siempre es 'Dev' (cliente ScalifyLabs).
+ *  - El owner siempre es 'Dev' (cliente SOURCESYNC).
  *  - El plan siempre es 'Default Domain'.
  *  - Las credenciales del sistema se generan aleatoriamente (Plesk las requiere).
  *  - La IP se obtiene directamente desde la base de datos interna de Plesk.
@@ -65,8 +65,9 @@ async function ensureSubscriptionExists(ssh, domain) {
 
   return {
     status: 'created',
-    message: `Suscripción ${domain} creada y asignada a ScalifyLabs (Dev).`,
+    message: `Suscripción ${domain} creada y asignada a SOURCESYNC (Dev).`,
   };
 }
 
 module.exports = { ensureSubscriptionExists };
+

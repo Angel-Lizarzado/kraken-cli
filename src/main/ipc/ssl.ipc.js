@@ -24,7 +24,18 @@ function registerSslHandlers(ipcMain, mainWindow, scope) {
   // de eventos (sync:domain-start, sync:domain-progress, ssl:log, state:update).
   // ipcMain.handle + streaming interno causa deadlock en Electron.
   ipcMain.on('plesk:install-ssl', async (event, { accountName, serverName, domains, options }) => {
-    const email = (options && options.email) || 'clinmediadev@gmail.com';
+    // Email para Let's Encrypt: primero del payload, luego de la configuración global
+    const configManager = getConfigManager();
+    await configManager.initialize();
+    const globalConfig = configManager.getConfig();
+    const email = (options && options.email) || globalConfig?.sslEmail || '';
+
+    if (!email) {
+      event.sender.send('ssl:sync-error', {
+        error: 'No hay correo SSL configurado. Vaya a Configuración e ingrese el correo para Let\'s Encrypt antes de ejecutar.',
+      });
+      return;
+    }
 
     if (isOperationRunning.value) {
       event.sender.send('ssl:sync-error', { error: '[COLA] Ya hay una operacion en curso. Espere a que finalice.' });
@@ -128,11 +139,24 @@ function registerSslHandlers(ipcMain, mainWindow, scope) {
         });
 
         try {
+          // ── SANITIZACIÓN DE SEGURIDAD (Anti-Inyección) ──
+          // Bloquea comillas, punto y coma, pipes, backticks y variables de entorno
+          if (/[;&|`'"$]/.test(domain)) {
+            throw new Error('Formato de dominio inválido: Caracteres ilegales detectados.');
+          }
+
+          // ── PRE-FLIGHT CHECK: ¿Existe el dominio físicamente en Plesk? ──
+          const checkDomainCmd = `plesk db -Ne "SELECT id FROM domains WHERE name='${domain}'"`;
+          const checkDomainResult = await sshService.executeCommand(client, checkDomainCmd);
+
+          if (checkDomainResult.code !== 0 || !checkDomainResult.stdout || checkDomainResult.stdout.trim() === '') {
+            throw new Error('Dominio no encontrado físicamente en Plesk. Verifica los alias.');
+          }
+
           // v1.8.3: Si el dominio es IDN (xn--), usar el dominio original (con ñ/tildes)
           // entre comillas simples para que Plesk lo interprete correctamente.
           const pleskDomain = domain.startsWith('xn--') ? `'${domain}'` : domain;
-          const sslitCommand = 'plesk ext sslit --certificate -issue -domain ' + pleskDomain +
-            ' -secure-domain -secure-www -secure-webmail -secure-mail -registrationEmail ' + email;
+          const sslitCommand = `plesk ext sslit --certificate -issue -domain ${pleskDomain} -secure-domain -secure-www -secure-webmail -secure-mail -registrationEmail ${email}`;
 
           // Verificar registros AAAA (IPv6) que podrían causar fallo en Plesk
           try {
