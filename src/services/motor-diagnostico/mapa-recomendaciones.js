@@ -191,7 +191,7 @@ plesk repair fs -y -vhosts ${dominio}`,
       accionRecomendada: 'ajuste_memoria_php',
       descripcion: `Límite de memoria PHP detectado en el log: ${contexto.limiteActualMB}MB.`,
       comandoMitigacion:
-        `plesk bin domain --update ${dominio} -php_settings "memory_limit=${contexto.limiteRecomendadoMB}M"`,
+        `plesk bin php_settings -u ${dominio} -settings memory_limit=${contexto.limiteRecomendadoMB}M`,
       comandoReloadFPM:
         `plesk bin domain --info ${dominio} | grep php_handler_id | awk '{print $2}' | xargs -I{} systemctl reload {}`,
       riesgo: 'BAJO',
@@ -210,6 +210,132 @@ plesk repair fs -y -vhosts ${dominio}`,
       requiereConfirmacion: true,
       notaAdicional: 'Equivale al "Repair Full" pero SOLO toca el core. wp-content intacto.',
     }),
+
+    PERMISOS_INCORRECTOS: () => ({
+      accionRecomendada: 'reparar_permisos_filesystem',
+      descripcion: `El servidor deniega acceso por permisos u ownership incorrecto en ${contexto.rutaAfectada || 'httpdocs'}.`,
+      comandoDiagnosticoPrevio:
+        `namei -l /var/www/vhosts/${dominio}/httpdocs && ls -la /var/www/vhosts/${dominio}/httpdocs | head`,
+      comandoMitigacion:
+        `plesk repair fs -y -vhosts ${dominio}`,
+      comandoVerificacionPosterior:
+        `find /var/www/vhosts/${dominio}/httpdocs -maxdepth 2 -type d -printf '%m %u:%g %p\\n' | head -n 30 && find /var/www/vhosts/${dominio}/httpdocs -maxdepth 2 -type f -printf '%m %u:%g %p\\n' | head -n 30`,
+      riesgo: 'BAJO',
+      requiereConfirmacion: false,
+      notaAdicional: 'Esperado en WordPress: directorios 755, archivos 644 y ownership correcto del suscriptor.',
+    }),
+
+    MODSECURITY_BLOQUEO: () => ({
+      accionRecomendada: 'ajustar_modsecurity',
+      descripcion: contexto.reglaId
+        ? `La petición fue bloqueada por ModSecurity. Regla detectada: ${contexto.reglaId}.`
+        : 'La petición fue bloqueada por ModSecurity / WAF.',
+      comandoDiagnosticoPrevio:
+        `grep -R "${dominio}" /var/log/modsec_audit.log /var/log/apache2/error_log /var/www/vhosts/system/${dominio}/logs/* 2>/dev/null | tail -n 50`,
+      comandoMitigacion:
+        `echo "MODSECURITY: Las excepciones deben añadirse vía Panel Plesk (Dominio > Web Application Firewall) introduciendo la ID: ${contexto.reglaId || 'REGLA_ID'}"`,
+      riesgo: 'MEDIO',
+      requiereConfirmacion: true,
+      notaAdicional: contexto.reglaId === '218500'
+        ? 'La regla 218500 se ha reportado con falsos positivos en WooCommerce.'
+        : 'Desactivar solo la regla concreta; no deshabilitar ModSecurity completo.',
+    }),
+
+    SIN_ARCHIVO_INDICE: () => ({
+      accionRecomendada: 'restaurar_index_wordpress',
+      descripcion: 'El directorio responde 403 porque no existe index.php o no hay DirectoryIndex válido.',
+      comandoDiagnosticoPrevio:
+        `ls -la /var/www/vhosts/${dominio}/httpdocs/index.php /var/www/vhosts/${dominio}/httpdocs/ 2>/dev/null`,
+      comandoMitigacion:
+        `plesk ext wp-toolkit --wp-cli -instance-id ${instanceId} -- core download --skip-content --force`,
+      riesgo: 'MEDIO',
+      requiereConfirmacion: true,
+      notaAdicional: 'Si solo falta index.php, reparar core con --skip-content suele bastar.',
+    }),
+
+    IP_BLOQUEADA_FIREWALL: () => ({
+      accionRecomendada: 'desbloquear_ip_firewall',
+      descripcion: contexto.ipBloqueada
+        ? `La IP ${contexto.ipBloqueada} parece estar bloqueada por firewall o Fail2Ban.`
+        : 'La IP del cliente o proxy parece estar bloqueada por firewall o Fail2Ban.',
+      comandoDiagnosticoPrevio:
+        `fail2ban-client status 2>/dev/null || true && iptables -S 2>/dev/null | tail -n 50 && plesk bin firewall --status 2>/dev/null || true`,
+      comandoMitigacion:
+        contexto.ipBloqueada
+          ? `fail2ban-client set plesk-apache unbanip ${contexto.ipBloqueada} 2>/dev/null || fail2ban-client set recidive unbanip ${contexto.ipBloqueada} 2>/dev/null || true`
+          : `echo 'Identificar IP exacta y desbloquearla en Fail2Ban o Plesk Firewall'`,
+      riesgo: 'MEDIO',
+      requiereConfirmacion: true,
+      notaAdicional: 'Si hay Cloudflare, revisar también whitelist de sus rangos.',
+    }),
+
+    CLOUDFLARE_TIMEOUT_522: () => ({
+      accionRecomendada: 'diagnosticar_timeout_origen_cloudflare',
+      descripcion: 'Cloudflare no logra completar la conexión TCP con el origen.',
+      comandoDiagnosticoPrevio:
+        `systemctl status nginx apache2 httpd mariadb --no-pager 2>/dev/null ; uptime ; free -m ; ss -lntp | egrep ':80|:443' ; curl -I --max-time 10 http://127.0.0.1 2>/dev/null || true ; curl -k -I --max-time 10 https://127.0.0.1 2>/dev/null || true`,
+      comandoMitigacion:
+        `plesk repair web ${dominio} -y && systemctl reload nginx 2>/dev/null || systemctl reload apache2 2>/dev/null || systemctl reload httpd 2>/dev/null`,
+      comandoEscaladoSiPersiste:
+        `for f in $(curl -s https://www.cloudflare.com/ips-v4); do echo "Permitir $f en firewall"; done`,
+      riesgo: 'MEDIO',
+      requiereConfirmacion: true,
+      notaAdicional: 'Comprobar IP del DNS en Cloudflare, carga del servidor, puertos 80/443 y whitelist.',
+    }),
+
+    SERVIDOR_INALCANZABLE_522: () => ({
+      accionRecomendada: 'restaurar_servicios_web',
+      descripcion: 'El servidor origen no responde o rechaza conexiones en 80/443.',
+      comandoDiagnosticoPrevio:
+        `ss -lntp | egrep ':80|:443' || true ; systemctl status nginx apache2 httpd --no-pager 2>/dev/null ; journalctl -u nginx -u apache2 -u httpd -n 80 --no-pager 2>/dev/null`,
+      comandoMitigacion:
+        `systemctl restart nginx 2>/dev/null || true ; systemctl restart apache2 2>/dev/null || systemctl restart httpd 2>/dev/null || true ; plesk repair web ${dominio} -y`,
+      riesgo: 'ALTO',
+      requiereConfirmacion: true,
+      notaAdicional: 'Suele indicar stack web caído, bind roto o proxy inverso mal configurado.',
+    }),
+
+    PLESK_INSTANCE_NO_RESUELTA: () => ({
+      accionRecomendada: 'registrar_instancia_wptoolkit',
+      descripcion: 'WP Toolkit no tiene una instancia asociada al dominio o no puede resolver su instanceId.',
+      comandoDiagnosticoPrevio:
+        `plesk ext wp-toolkit --list 2>/dev/null | grep -i ${dominio} || true`,
+      comandoMitigacion:
+        `DOMAIN_ID=$(plesk db -Ne "SELECT id FROM domains WHERE name='${dominio}'" 2>/dev/null | xargs); plesk ext wp-toolkit --detach -main-domain-id "$DOMAIN_ID" -path httpdocs 2>/dev/null || true; plesk ext wp-toolkit --register -main-domain-id "$DOMAIN_ID" -path httpdocs`,
+      comandoAlternativoSeguro:
+        `plesk repair web ${dominio} -y && plesk repair fs -y -vhosts ${dominio}`,
+      riesgo: 'BAJO',
+      requiereConfirmacion: false,
+      notaAdicional: 'Muy común tras migraciones automáticas donde WP Toolkit no fue re-registrado.',
+    }),
+
+    DISCO_LLENO: () => ({
+      accionRecomendada: 'liberar_espacio_disco',
+      descripcion: 'El sitio falla porque el sistema no tiene espacio libre o se excedió la cuota.',
+      comandoDiagnosticoPrevio:
+        `df -h && quota -vs 2>/dev/null || true && du -sh /var/www/vhosts/${dominio}/httpdocs/* 2>/dev/null | sort -h | tail -n 20`,
+      comandoMitigacion:
+        `find /var/www/vhosts/${dominio}/httpdocs -type f \\( -name '*.log' -o -name '*.zip' -o -name '*.tar' -o -name '*.sql' \\) -size +20M -print`,
+      riesgo: 'MEDIO',
+      requiereConfirmacion: true,
+      notaAdicional: 'Primero localizar dumps, backups y logs grandes antes de borrar.',
+    }),
+
+    PHP_FPM_CAIDO: () => ({
+      accionRecomendada: 'reiniciar_php_fpm',
+      descripcion: 'El pool PHP-FPM del dominio o su socket parece caído o inaccesible.',
+      comandoDiagnosticoPrevio:
+        `plesk bin domain --info ${dominio} | grep php_handler_id ; systemctl status plesk-php*-fpm --no-pager 2>/dev/null | tail -n 80`,
+      comandoMitigacion:
+        `plesk bin domain --info ${dominio} | grep php_handler_id | awk '{print $2}' | xargs -I{} systemctl restart {} || systemctl restart plesk-php*-fpm.service`,
+      comandoVerificacionPosterior:
+        `journalctl -u plesk-php*-fpm -n 100 --no-pager 2>/dev/null`,
+      riesgo: 'MEDIO',
+      requiereConfirmacion: false,
+      notaAdicional: contexto.socketFPM
+        ? `Socket afectado detectado: ${contexto.socketFPM}`
+        : 'Revisar también saturación del pool.',
+    })
   };
 
   const generador = MAPA[tipoError];

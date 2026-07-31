@@ -70,16 +70,15 @@ export default function DrawerMetrics({ server, onRunDiagnostics, onLog, execSer
       />
 
       {/* ── Desglose de Almacenamiento ── */}
-      <div className="card p-4">
+      <div className="bg-surface-container-low border border-outline-variant rounded p-4">
         <h3 className="font-display text-sm font-bold mb-3 flex items-center gap-2">
-          <HardDrive size={14} style={{ color: 'var(--text-muted)' }} />
+          <HardDrive size={14} className="text-on-surface-variant" />
           <span style={{ flex: 1 }}>Desglose de Almacenamiento</span>
 
           {/* Indicador de caché + botón refrescar */}
           {!loadingStorage && storageData && fromCache && (
             <span
-              className="text-[10px] font-mono"
-              style={{ color: 'var(--text-muted)' }}
+              className="text-[10px] font-mono text-on-surface-variant"
               title="Datos servidos desde caché local (menos de 60 min de antigüedad)"
             >
               desde caché
@@ -88,14 +87,9 @@ export default function DrawerMetrics({ server, onRunDiagnostics, onLog, execSer
           <button
             onClick={handleForceRefresh}
             disabled={loadingStorage}
-            className="btn btn--ghost"
+            className="p-1.5 rounded-md text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-all"
             title="Actualizar datos en tiempo real"
-            style={{
-              padding: '3px 6px',
-              borderRadius: '4px',
-              lineHeight: 1,
-              color: loadingStorage ? 'var(--text-muted)' : 'var(--text-secondary)',
-            }}
+            style={{ padding: '3px 6px', lineHeight: 1 }}
             aria-label="Actualizar desglose de almacenamiento"
           >
             <RefreshCw
@@ -109,17 +103,17 @@ export default function DrawerMetrics({ server, onRunDiagnostics, onLog, execSer
         </h3>
 
         {loadingStorage ? (
-          <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-muted)' }}>
+          <div className="flex items-center gap-2 text-xs text-on-surface-variant">
             <span className="spinner-mini" /> Consultando servidor...
           </div>
         ) : storageData ? (
           <div className="space-y-2">
-            <StorageRow icon={<FolderArchive size={13} />} label="Copias de Seguridad (Plesk)" value={storageData.backups} color="var(--color-warning)" />
-            <StorageRow icon={<Globe size={13} />} label="Sitios Web de Clientes" value={storageData.vhosts} color="var(--color-info)" />
-            <StorageRow icon={<FileText size={13} />} label="Archivos de Logs" value={storageData.logs} color="var(--text-muted)" />
+            <StorageRow icon={<FolderArchive size={13} />} label="Copias de Seguridad (Plesk)" value={storageData.backups} color="#ffb142" />
+            <StorageRow icon={<Globe size={13} />} label="Sitios Web de Clientes" value={storageData.vhosts} color="#34ace0" />
+            <StorageRow icon={<FileText size={13} />} label="Archivos de Logs" value={storageData.logs} color="#a5a5a5" />
           </div>
         ) : (
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>No disponible</p>
+          <p className="text-xs text-on-surface-variant">No disponible</p>
         )}
       </div>
     </div>
@@ -129,7 +123,7 @@ export default function DrawerMetrics({ server, onRunDiagnostics, onLog, execSer
 function StorageRow({ icon, label, value, color }: { icon: React.ReactNode; label: string; value: string; color: string }) {
   return (
     <div className="flex items-center justify-between text-xs">
-      <span className="flex items-center gap-2" style={{ color: 'var(--text-secondary)' }}>
+      <span className="flex items-center gap-2 text-on-surface-variant">
         <span style={{ color }}>{icon}</span>
         {label}
       </span>

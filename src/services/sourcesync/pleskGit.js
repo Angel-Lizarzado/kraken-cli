@@ -26,7 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const REPO_NAME             = 'github-repo';
 const TARGET_BRANCH         = 'main';
-const DEPLOY_ACTION         = 'sh ./deploy.sh';
+const DEPLOY_ACTION         = 'sh ../kraken-deploy.sh';
 const KEY_PROPAGATION_MS    = 15_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ async function cleanPreviousState(ssh, domain) {
   console.log(`[SOURCESYNC:Git] [1/8] Limpiando estado previo...`);
 
   await run(ssh,
-    `plesk ext git --delete -domain ${domain} -name "${REPO_NAME}" 2>/dev/null || true`,
+    `plesk ext git --remove -domain ${domain} -name "${REPO_NAME}" 2>/dev/null || plesk ext git --delete -domain ${domain} -name "${REPO_NAME}" 2>/dev/null || true`,
     { allowFail: true }
   );
   await run(ssh,
@@ -225,6 +225,116 @@ async function manualBareClone(ssh, domain, sshUrl) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PASO 4.5 — Inyectar kraken-deploy.sh seguro
+// ─────────────────────────────────────────────────────────────────────────────
+async function injectKrakenDeployScript(ssh, domain, versionNode = '24.15.0') {
+  console.log(`[SOURCESYNC:Git] [4.5/8] Inyectando kraken-deploy.sh en la raíz del dominio...`);
+
+  const majorVersion = versionNode.split('.')[0] || '24';
+
+  // Para evitar problemas de escape en Bash/SSH, encodeamos el script en base64
+  // NOTA: Usamos \\s para que en JavaScript se pase \s a la expresión regular de Node
+  const scriptContent = `#!/bin/bash
+set -e
+
+DOMAIN="\$1"
+if [ -z "\$DOMAIN" ]; then
+  DOMAIN=\$(basename \$(dirname \$(pwd)))
+fi
+
+HTTPDOCS="/var/www/vhosts/\$DOMAIN/httpdocs"
+
+echo "[Kraken Deploy] Iniciando deploy maestro para \$DOMAIN"
+cd "\$HTTPDOCS"
+
+# 1. PATH Node.js (Plesk Node ${majorVersion}.x)
+export PATH=/opt/plesk/node/${majorVersion}/bin:\$PATH
+
+# 2. Inyectar output: standalone en Next.js
+node -e "
+const fs = require('fs');
+const files = ['next.config.js', 'next.config.mjs'];
+let found = false;
+
+for (const f of files) {
+  if (fs.existsSync(f)) {
+    found = true;
+    let content = fs.readFileSync(f, 'utf8');
+    if (!content.includes('standalone')) {
+      console.log('[Kraken Deploy] Inyectando output: standalone en ' + f);
+      // Inyectar en const nextConfig = { o module.exports = { o export default {
+      content = content.replace(/(const\\s+nextConfig\\s*=\\s*\\{)/, '\\$1\\n  output: \\\\'standalone\\\\',');
+      content = content.replace(/(module\\.exports\\s*=\\s*\\{)/, '\\$1\\n  output: \\\\'standalone\\\\',');
+      content = content.replace(/(export\\s+default\\s+\\{)/, '\\$1\\n  output: \\\\'standalone\\\\',');
+      fs.writeFileSync(f, content);
+    } else {
+      console.log('[Kraken Deploy] ' + f + ' ya contiene output: standalone');
+    }
+    break;
+  }
+}
+
+if (!found) {
+  console.log('[Kraken Deploy] WARN: No se encontró next.config.js/mjs. Si es Next.js, deberia existir.');
+}
+"
+
+# 3. NPM
+echo "[Kraken Deploy] Instalando dependencias..."
+npm install
+
+echo "[Kraken Deploy] Compilando Next.js (Standalone)..."
+npm run build
+
+# 4. Mover standalone
+if [ -d ".next/standalone" ]; then
+  echo "[Kraken Deploy] Moviendo standalone a root..."
+  cp -r .next/standalone/. ./
+  
+  if [ -f "server.js" ]; then
+    mv server.js app.js
+    echo "[Kraken Deploy] Renombrado server.js -> app.js para Plesk Passenger"
+  fi
+else
+  echo "[Kraken Deploy] WARN: .next/standalone no encontrado. ¿El build falló o no es Next.js?"
+fi
+
+# 5. Sincronizar estáticos
+mkdir -p .next/static
+if [ -d ".next/static" ]; then
+  echo "[Kraken Deploy] Sincronizando .next/static..."
+  rsync -a .next/static/ public/_next/static/ || cp -r .next/static/* public/_next/static/ 2>/dev/null || true
+fi
+
+# 6. Permisos (detecta usuario dinámicamente)
+SYSUSER=\$(stat -c '%U' "\$HTTPDOCS")
+echo "[Kraken Deploy] Ajustando permisos para el usuario: \$SYSUSER"
+chown -R "\$SYSUSER:psacln" "\$HTTPDOCS"
+# ¡CRÍTICO! La carpeta httpdocs DEBE pertenecer al grupo psaserv para que Apache/Nginx pueda entrar
+chown "\$SYSUSER:psaserv" "\$HTTPDOCS"
+
+# 7. Reiniciar Passenger
+mkdir -p tmp
+touch tmp/restart.txt
+echo "[Kraken Deploy] Passenger reiniciado."
+
+echo "[Kraken Deploy] ¡Deploy exitoso para \$DOMAIN!"
+`;
+
+  const base64Script = Buffer.from(scriptContent).toString('base64');
+  const targetPath = `/var/www/vhosts/${domain}/kraken-deploy.sh`;
+
+  await run(ssh, `echo "${base64Script}" | base64 --decode > "${targetPath}"`);
+  await run(ssh, `chmod +x "${targetPath}"`);
+  
+  // Establecer permisos para el usuario de la suscripción
+  const { stdout: sysUserOut } = await run(ssh, `stat -c '%U' /var/www/vhosts/${domain}`);
+  const subscriptionUser = sysUserOut.trim() || 'root';
+  await run(ssh, `chown ${subscriptionUser}:psacln "${targetPath}"`, { allowFail: true });
+  console.log(`[SOURCESYNC:Git] kraken-deploy.sh inyectado exitosamente.`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // PASO 5 — Configurar CI/CD en Plesk (modo manual + deploy.sh)
 // ─────────────────────────────────────────────────────────────────────────────
 async function configureCICD(ssh, domain) {
@@ -264,43 +374,40 @@ async function firstPleskDeploy(ssh, domain) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASO 6.5 — Node.js 22.x Bootstrap
-// Habilita Node.js, fuerza la versión 22.x y establece npm como package manager
+// PASO 6.5 — Node.js Bootstrap
+// Habilita Node.js y establece npm como package manager
 // Es vital ejecutar esto antes de que deploy.sh intente hacer 'npm install'
 // ─────────────────────────────────────────────────────────────────────────────
 async function provisionNodeJS(ssh, domain) {
-  console.log(`[SOURCESYNC:Git] [6.5/8] Aprovisionando entorno Node.js 22.x en Plesk...`);
+  console.log(`[SOURCESYNC:Git] [6.5/8] Aprovisionando entorno Node.js en Plesk...`);
 
-  const nodeCmds = [
-    `plesk bin nodejs --enable -domain "${domain}" > /dev/null 2>&1 || true`,
-    `plesk bin nodejs --update -domain "${domain}" -version 22.x > /dev/null 2>&1 || true`,
-    `plesk bin nodejs --update -domain "${domain}" -package-manager npm > /dev/null 2>&1 || true`
-  ].join(' && ');
+  await run(ssh, `plesk ext nodejs --enable -domain "${domain}"`, { allowFail: true });
+  await run(ssh, `plesk ext nodejs --app-root httpdocs --startup-file app.js -domain "${domain}"`, { allowFail: true });
 
-  await run(ssh, nodeCmds, { allowFail: true });
-  console.log(`[SOURCESYNC:Git] Motor Node.js 22.x activado ✓`);
+  console.log(`[SOURCESYNC:Git] Reconfigurando el servidor web para inyectar Passenger...`);
+  await run(ssh, `plesk sbin httpdmng --reconfigure-domain "${domain}"`, { allowFail: true });
+
+  console.log(`[SOURCESYNC:Git] Motor Node.js activado y configurado ✓`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// PASO 7 — Bootstrap garantizado: sh ./deploy.sh directo en httpdocs
+// PASO 7 — Bootstrap garantizado: sh ../kraken-deploy.sh directo en httpdocs
 // Cubre el caso donde Plesk no dispara las additional actions en el primer deploy.
 // ─────────────────────────────────────────────────────────────────────────────
 async function forceBootstrapDeploy(ssh, domain) {
-  console.log(`[SOURCESYNC:Git] [7/8] Ejecutando deploy.sh directamente (bootstrap garantizado)...`);
+  console.log(`[SOURCESYNC:Git] [7/8] Ejecutando kraken-deploy.sh directamente (bootstrap garantizado)...`);
 
   const httpdocs = `/var/www/vhosts/${domain}/httpdocs`;
 
-  await run(ssh, `chmod +x "${httpdocs}/deploy.sh"`, { allowFail: true });
-
   const { code, stdout, stderr } = await ssh.execCommand(
-    `cd "${httpdocs}" && sh ./deploy.sh 2>&1`
+    `cd "${httpdocs}" && bash ../kraken-deploy.sh "${domain}" 2>&1`
   );
 
-  if (stdout) console.log(`[SOURCESYNC:Git] deploy.sh output:\n${stdout}`);
+  if (stdout) console.log(`[SOURCESYNC:Git] kraken-deploy.sh output:\n${stdout}`);
 
   if (code !== 0) {
     throw new Error(
-      `[SOURCESYNC:Git] deploy.sh falló con exit ${code} para ${domain}:\n${stderr || stdout}`
+      `[SOURCESYNC:Git] kraken-deploy.sh falló con exit ${code} para ${domain}:\n${stderr || stdout}`
     );
   }
 
@@ -361,6 +468,8 @@ async function configurarRepoEnPlesk(ssh, domain, httpsUrl, registerKeyFn, opcio
   await registerKeyInGitHub(pleskPublicKey, registerKeyFn);
 
   await manualBareClone(ssh, d, urlSsh);
+
+  await injectKrakenDeployScript(ssh, d, opciones.versionNode);
 
   await configureCICD(ssh, d);
 

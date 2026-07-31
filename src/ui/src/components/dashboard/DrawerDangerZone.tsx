@@ -98,58 +98,50 @@ export default function DrawerDangerZone({
     <div className="space-y-6">
       {/* Warning banner */}
       <div
-        className="p-4 rounded-lg"
-        style={{
-          backgroundColor: 'oklch(0.45 0.18 25 / 0.1)',
-          border: '1px solid oklch(0.45 0.18 25 / 0.2)',
-        }}
+        className="p-4 rounded-lg bg-error/10 border border-error/20"
       >
-        <h3 className="font-display font-bold text-sm mb-1" style={{ color: 'var(--color-error)' }}>
+        <h3 className="font-display font-bold text-sm mb-1 text-error">
           Zona de Peligro
         </h3>
-        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+        <p className="text-xs text-on-surface-variant">
           Estas acciones son irreversibles. Escriba el nombre del servidor para habilitarlas.
         </p>
       </div>
 
       {/* Confirmation input */}
       <div>
-        <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-muted)' }}>
-          Escriba <code className="font-mono rounded px-1" style={{ backgroundColor: 'var(--surface-overlay)' }}>{server.name}</code> para confirmar:
+        <label className="text-xs font-medium mb-1.5 block text-on-surface-variant">
+          Escriba <code className="font-mono rounded px-1 bg-black/30">{server.name}</code> para confirmar:
         </label>
         <input
           type="text"
           value={dangerConfirmInput}
           onChange={e => setDangerConfirmInput(e.target.value)}
           placeholder={server.name}
-          className="input input--mono"
+          className="w-full bg-background border border-outline-variant rounded px-3 py-1.5 text-sm text-on-surface font-mono focus:border-error focus:ring-1 focus:ring-error transition-all"
         />
       </div>
 
       {/* ── Limpieza de Backups Locales de Plesk ── */}
       {onPurgeBackups && (
         <div
-          className="p-4 rounded-lg"
-          style={{
-            backgroundColor: 'oklch(0.4 0.08 35 / 0.08)',
-            border: '1px solid oklch(0.4 0.08 35 / 0.15)',
-          }}
+          className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/20"
         >
-          <h4 className="font-display font-bold text-xs mb-2 flex items-center gap-2" style={{ color: 'var(--color-warning)' }}>
+          <h4 className="font-display font-bold text-xs mb-2 flex items-center gap-2 text-yellow-400">
             <Database size={14} />
             Limpieza de Backups Locales de Plesk
           </h4>
-          <p className="text-[11px] mb-3" style={{ color: 'var(--text-muted)' }}>
+          <p className="text-[11px] mb-3 text-on-surface-variant">
             Elimina backups antiguos de Plesk en /var/lib/psa/dumps/ según los días de retención.
           </p>
 
-          <label className="text-[11px] font-medium mb-1 block" style={{ color: 'var(--text-muted)' }}>
+          <label className="text-[11px] font-medium mb-1 block text-on-surface-variant">
             Días de retención:
           </label>
           <select
             value={daysRetention}
             onChange={e => setDaysRetention(Number(e.target.value))}
-            className="input mb-3 text-xs"
+            className="w-full bg-background border border-outline-variant rounded px-3 py-1.5 text-xs text-on-surface mb-3 focus:border-tertiary focus:ring-1 focus:ring-tertiary transition-all"
             disabled={purging}
           >
             {RETENTION_OPTIONS.map(opt => (
@@ -159,21 +151,16 @@ export default function DrawerDangerZone({
 
           {/* Estimación dinámica */}
           <div
-            className="mb-3 p-2.5 rounded text-xs"
-            style={{
-              backgroundColor: 'oklch(0.3 0.03 260 / 0.3)',
-              border: '1px solid oklch(0.3 0.03 260 / 0.25)',
-              color: 'var(--text-secondary)',
-            }}
+            className="mb-3 p-2.5 rounded text-xs bg-surface-container border border-outline-variant text-on-surface-variant"
           >
             {loadingEstimation ? (
-              <span className="flex items-center gap-2" style={{ color: 'var(--text-muted)' }}>
+              <span className="flex items-center gap-2 text-on-surface-variant">
                 <span className="spinner-mini" /> Calculando...
               </span>
             ) : (
               <>
                 👉 Selección actual: Se eliminarán aproximadamente{' '}
-                <strong style={{ color: 'var(--color-warning)' }}>{estimatedSavings}</strong>{' '}
+                <strong className="text-yellow-400">{estimatedSavings}</strong>{' '}
                 de datos viejos en tu servidor.
               </>
             )}
@@ -182,13 +169,7 @@ export default function DrawerDangerZone({
           <button
             onClick={handlePurgeBackups}
             disabled={!isConfirmed || purging}
-            className="btn w-full flex items-center justify-center gap-2 text-xs"
-            style={{
-              backgroundColor: 'oklch(0.45 0.18 35 / 0.15)',
-              color: isConfirmed ? 'var(--color-error)' : 'var(--text-muted)',
-              border: '1px solid oklch(0.45 0.18 35 / 0.25)',
-              opacity: isConfirmed ? 1 : 0.5,
-            }}
+            className={`w-full flex items-center justify-center gap-2 px-3 py-2 text-xs font-title-sm rounded border transition-all ${isConfirmed ? 'bg-error/20 text-error border-error/30 hover:bg-error/30' : 'bg-surface-container text-on-surface-variant border-outline-variant opacity-50'}`}
           >
             {purging ? (
               <><span className="spinner-mini" /> Purgando backups...</>
@@ -204,13 +185,7 @@ export default function DrawerDangerZone({
         <button
           onClick={() => handleAction('restart')}
           disabled={!isConfirmed}
-          className="btn w-full flex items-center justify-center gap-2 text-sm"
-          style={{
-            backgroundColor: 'oklch(0.55 0.15 75 / 0.15)',
-            color: isConfirmed ? 'var(--color-warning)' : 'var(--text-muted)',
-            border: '1px solid oklch(0.55 0.15 75 / 0.2)',
-            opacity: isConfirmed ? 1 : 0.5,
-          }}
+          className={`w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-title-sm rounded border transition-all ${isConfirmed ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30 hover:bg-yellow-500/30' : 'bg-surface-container text-on-surface-variant border-outline-variant opacity-50'}`}
         >
           <Power size={14} />
           Reiniciar Servidor
@@ -218,8 +193,7 @@ export default function DrawerDangerZone({
         <button
           onClick={() => handleAction('shutdown')}
           disabled={!isConfirmed}
-          className="btn btn--danger w-full flex items-center justify-center gap-2 text-sm"
-          style={{ opacity: isConfirmed ? 1 : 0.5 }}
+          className={`w-full flex items-center justify-center gap-2 px-4 py-2 text-sm font-title-sm rounded transition-all ${isConfirmed ? 'bg-error text-white hover:brightness-110' : 'bg-surface-container text-on-surface-variant opacity-50 cursor-not-allowed'}`}
         >
           <PowerOff size={14} />
           Apagar Servidor

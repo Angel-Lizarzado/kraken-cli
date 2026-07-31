@@ -9,6 +9,7 @@ class SshService {
   constructor() {
     this.configManager = getConfigManager();
     this.clients = new Map(); // taskId -> client
+    this.connectionPool = new Map(); // cacheKey -> { client, timer }
   }
 
   /**
@@ -90,6 +91,73 @@ class SshService {
 
     console.warn('[SSH-KEY] No se encontró ninguna llave privada válida en ninguna fuente.');
     return null;
+  }
+
+  /**
+   * Multiplexación SSH: Conecta (o reutiliza) un cliente SSH por host.
+   * Util para escaneos masivos de flota sin activar alarmas de firewall por múltiples logins.
+   */
+  async connectCached(sshConfig, readyTimeout = 40000) {
+    const cacheKey = `${sshConfig.host}:${sshConfig.port}:${sshConfig.username}`;
+    const poolEntry = this.connectionPool.get(cacheKey);
+
+    if (poolEntry && poolEntry.client) {
+      const client = poolEntry.client;
+      if (client._sock && !client._sock.destroyed) {
+        console.log(`[SSH-POOL] Reutilizando conexión existente para ${cacheKey} (Multiplexación)`);
+        // Reiniciamos el timer de inactividad
+        this._resetIdleTimer(cacheKey);
+        return client;
+      } else {
+        // El socket estaba muerto, limpiamos y conectamos de nuevo
+        console.log(`[SSH-POOL] Conexión existente para ${cacheKey} estaba muerta. Reconectando...`);
+        this._removeCachedClient(cacheKey);
+      }
+    }
+
+    console.log(`[SSH-POOL] Creando NUEVA conexión compartida para ${cacheKey}`);
+    const client = await this.connect(sshConfig, `pool-${cacheKey}`, readyTimeout);
+    
+    // Monitor for unexpected closes
+    client.on('close', () => {
+      console.log(`[SSH-POOL] Conexión compartida cerrada: ${cacheKey}`);
+      this._removeCachedClient(cacheKey);
+    });
+    
+    client.on('error', () => {
+      console.log(`[SSH-POOL] Conexión compartida con error: ${cacheKey}`);
+      this._removeCachedClient(cacheKey);
+    });
+
+    this.connectionPool.set(cacheKey, { client, timer: null });
+    this._resetIdleTimer(cacheKey);
+
+    return client;
+  }
+
+  _resetIdleTimer(cacheKey) {
+    const poolEntry = this.connectionPool.get(cacheKey);
+    if (!poolEntry) return;
+
+    if (poolEntry.timer) {
+      clearTimeout(poolEntry.timer);
+    }
+
+    // 3 minutos de inactividad
+    poolEntry.timer = setTimeout(() => {
+      console.log(`[SSH-POOL] Cerrando conexión inactiva (Idle Timeout 3m) para ${cacheKey}`);
+      try {
+        if (poolEntry.client) poolEntry.client.end();
+      } catch (e) {}
+      this.connectionPool.delete(cacheKey);
+    }, 180000);
+  }
+
+  _removeCachedClient(cacheKey) {
+    const poolEntry = this.connectionPool.get(cacheKey);
+    if (!poolEntry) return;
+    if (poolEntry.timer) clearTimeout(poolEntry.timer);
+    this.connectionPool.delete(cacheKey);
   }
 
   async connect(sshConfig, taskId = 'default', readyTimeout = 40000) {
@@ -257,6 +325,13 @@ class SshService {
   }
 
   async executeCommand(client, command, options = {}) {
+    // Si es un cliente del pool de multiplexación, reiniciamos su timer de inactividad
+    for (const [key, poolEntry] of this.connectionPool.entries()) {
+      if (poolEntry.client === client) {
+        this._resetIdleTimer(key);
+        break;
+      }
+    }
     return new Promise((resolve, reject) => {
       client.exec(command, options, (err, stream) => {
         if (err) {

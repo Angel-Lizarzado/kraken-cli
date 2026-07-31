@@ -16,13 +16,8 @@ const ServerCard = React.memo(function ServerCard({ server, isSelected, onSelect
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.15, ease: 'easeOut' }}
-      className="card flex items-center gap-3 p-3 cursor-pointer"
-      style={{
-        height: '76px',
-        borderColor: isSelected ? 'var(--color-accent)' : 'var(--border-default)',
-        backgroundColor: isSelected ? 'oklch(0.22 0.05 260 / 0.3)' : 'var(--surface-base)',
-        transition: 'background-color 0.15s ease, border-color 0.15s ease',
-      }}
+      style={{ height: '76px' }}
+      className={`flex items-center gap-3 p-3 cursor-pointer rounded border transition-colors ${isSelected ? 'border-tertiary bg-tertiary/10' : 'border-outline-variant bg-surface-container-low hover:bg-surface-container-high'}`}
       whileHover={{ scale: 1.02 }}
       whileTap={{ scale: 0.98 }}
       onClick={() => onSelect(server)}
@@ -32,7 +27,7 @@ const ServerCard = React.memo(function ServerCard({ server, isSelected, onSelect
         <StatusDot status={server.status} />
         <div className="min-w-0">
           <div className="font-display font-bold text-sm truncate">{server.name}</div>
-          <div className="text-xs font-mono truncate" style={{ color: 'var(--text-muted)' }}>
+          <div className="text-xs font-mono truncate text-on-surface-variant">
             {server.sshCredentials.host}:{server.sshCredentials.port}
           </div>
         </div>
@@ -43,18 +38,18 @@ const ServerCard = React.memo(function ServerCard({ server, isSelected, onSelect
         {server.diagnostics ? (
           <MiniMetrics diagnostics={server.diagnostics} />
         ) : (
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Sin datos</span>
+          <span className="text-[10px] text-on-surface-variant">Sin datos</span>
         )}
       </div>
 
       {/* Right: SSH status + chevron */}
       <div className="flex items-center gap-1.5 flex-shrink-0">
         <span
-          className={`tag ${server.isLinked ? 'tag--success' : 'tag--error'} text-[10px] leading-none`}
+          className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold leading-none ${server.isLinked ? 'bg-green-500/10 text-green-400' : 'bg-error/10 text-error'}`}
         >
           {server.isLinked ? 'SSH' : 'No SSH'}
         </span>
-        <ChevronRight size={14} style={{ color: 'var(--text-muted)' }} />
+        <ChevronRight size={14} className="text-on-surface-variant" />
       </div>
     </motion.div>
   );
@@ -81,7 +76,7 @@ const MiniMetrics = React.memo(function MiniMetrics({ diagnostics }: MiniMetrics
   return (
     <>
       {bars.map(m => {
-        const fillColor = m.pct > 90 ? 'var(--color-error)' : m.pct > 70 ? 'var(--color-warning)' : 'var(--color-success)';
+        const fillColor = m.pct > 90 ? '#ff5252' : m.pct > 70 ? '#ffb142' : '#33d9b2';
         return (
           <div key={m.label} className="flex flex-col items-center gap-0.5">
             <div
@@ -89,7 +84,7 @@ const MiniMetrics = React.memo(function MiniMetrics({ diagnostics }: MiniMetrics
                 width: '40px',
                 height: '4px',
                 borderRadius: '2px',
-                backgroundColor: 'var(--surface-overlay)',
+                backgroundColor: 'rgba(255, 255, 255, 0.05)',
                 overflow: 'hidden',
               }}
             >
@@ -103,7 +98,7 @@ const MiniMetrics = React.memo(function MiniMetrics({ diagnostics }: MiniMetrics
                 }}
               />
             </div>
-            <span className="text-[10px] leading-none" style={{ color: 'var(--text-muted)' }}>{m.label}</span>
+            <span className="text-[10px] leading-none text-on-surface-variant">{m.label}</span>
           </div>
         );
       })}

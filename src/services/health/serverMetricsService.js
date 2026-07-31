@@ -31,11 +31,29 @@ echo "";
 echo "===DISK===";
 df -BM / | awk 'NR==2{gsub(/M/,"",$2); gsub(/M/,"",$3); gsub(/M/,"",$4); printf "%s %s %s", $2, $3, $4}';
 echo "";
+echo "===INODES===";
+df -i / | awk 'NR==2{printf "%s %s %s", $2, $3, $4}';
+echo "";
 echo "===LOAD===";
 cat /proc/loadavg | awk '{printf "%s %s %s", $1, $2, $3}';
 echo "";
 echo "===UPTIME===";
 uptime -p 2>/dev/null || uptime | awk -F'up ' '{split($2,a,","); printf "%s", a[1]}';
+echo "";
+echo "===PLESK===";
+plesk -v 2>/dev/null | grep -i "Product version" | awk -F':' '{print $2}' | xargs || echo "Unknown";
+echo "";
+echo "===OS===";
+cat /etc/os-release 2>/dev/null | awk -F= '/^PRETTY_NAME/ {gsub(/"/,"",$2); print $2}' || echo "Unknown";
+echo "";
+echo "===DOMAINS===";
+plesk db -Ne "SELECT count(*) FROM domains;" 2>/dev/null || echo "0";
+echo "";
+echo "===SERVICES===";
+for s in mariadb mysql nginx httpd sw-engine fail2ban; do echo -n "$s:"$(systemctl is-active $s 2>/dev/null || echo "unknown")" "; done;
+echo "";
+echo "===NETWORK===";
+cat /proc/net/dev | awk 'NR>2 && $1 !~ /^lo:/ {rx+=$2; tx+=$10} END {printf "%s %s", rx, tx}' || echo "0 0";
 echo "";
 `.trim();
 
@@ -56,6 +74,15 @@ echo "";
  * @property {string}  load5         - Carga 5 minutos
  * @property {string}  load15        - Carga 15 minutos
  * @property {string}  uptime        - Tiempo activo del servidor
+ * @property {number}  inodesTotal   - Total inodos
+ * @property {number}  inodesUsed    - Inodos usados
+ * @property {number}  inodesPercent - % uso inodos
+ * @property {string}  pleskVersion  - Versión de Plesk
+ * @property {string}  osVersion     - Versión del SO
+ * @property {number}  totalDomains  - Dominios alojados
+ * @property {Object}  services      - Estado de servicios (nginx, apache, mysql, fail2ban)
+ * @property {number}  netRxBytes    - Bytes recibidos (acumulado)
+ * @property {number}  netTxBytes    - Bytes enviados (acumulado)
  * @property {number}  timestamp     - Unix timestamp de la medición
  */
 
@@ -96,6 +123,12 @@ function parseMetrics(raw) {
   const diskFree    = diskParts[2] || 0;
   const diskPercent = diskTotal > 0 ? Math.round((diskUsed / diskTotal) * 100) : 0;
 
+  // Inodos: "total used free"
+  const inodesParts = (sections.INODES || '').split(' ').map(Number);
+  const inodesTotal   = inodesParts[0] || 0;
+  const inodesUsed    = inodesParts[1] || 0;
+  const inodesPercent = inodesTotal > 0 ? Math.round((inodesUsed / inodesTotal) * 100) : 0;
+
   // Load averages
   const loadParts = (sections.LOAD || '').split(' ');
   const load1  = loadParts[0] || '—';
@@ -104,6 +137,36 @@ function parseMetrics(raw) {
 
   // Uptime
   const uptime = sections.UPTIME || '—';
+
+  // Additional info
+  const pleskVersion = sections.PLESK || 'Unknown';
+  const osVersion = sections.OS || 'Unknown';
+  const totalDomains = parseInt(sections.DOMAINS || '0', 10) || 0;
+
+  // Network
+  const netParts = (sections.NETWORK || '').split(' ').map(Number);
+  const netRxBytes = netParts[0] || 0;
+  const netTxBytes = netParts[1] || 0;
+
+  // Services
+  const svcRaw = sections.SERVICES || '';
+  const services = {
+    nginx: 'unknown',
+    apache: 'unknown',
+    mysql: 'unknown',
+    fail2ban: 'unknown',
+  };
+  
+  svcRaw.split(' ').forEach(pair => {
+    const [name, status] = pair.split(':');
+    if (!name || !status) return;
+    if (name === 'mariadb' || name === 'mysql') {
+      if (status === 'active') services.mysql = 'active';
+      else if (services.mysql !== 'active' && status !== 'unknown') services.mysql = status;
+    }
+    else if (name === 'httpd') services.apache = status;
+    else if (services[name] !== undefined) services[name] = status;
+  });
 
   return {
     ramTotalMb: ramTotal,
@@ -115,10 +178,19 @@ function parseMetrics(raw) {
     diskUsedMb: diskUsed,
     diskFreeMb: diskFree,
     diskPercent,
+    inodesTotal,
+    inodesUsed,
+    inodesPercent,
     load1,
     load5,
     load15,
     uptime,
+    pleskVersion,
+    osVersion,
+    totalDomains,
+    services,
+    netRxBytes,
+    netTxBytes,
     timestamp: Date.now(),
   };
 }

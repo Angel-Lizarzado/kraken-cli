@@ -11,6 +11,7 @@ const SEND_CHANNELS = [
   'progress:unsubscribe',
   'cloudflare:sync-domains',
   'plesk:install-ssl',
+  'plesk:provision-domain',
   // ── Auto-updater commands (renderer → main) ──
   'updater:quit-and-install',
   'updater:check-manually',
@@ -20,10 +21,15 @@ const SEND_CHANNELS = [
 
 const RECEIVE_CHANNELS = [
   'state:update',
+  'app:state-update',
   'cloudflare:log',
   'cloudflare:state-changed',
   'deployment:log',
   'deployment:state-changed',
+  'migrate-domain-start',
+  'migrate-domain-success',
+  'migrate-domain-error',
+  'migrate-domain-warning',
   'module:progress',
   'module:completed',
   'module:error',
@@ -40,6 +46,9 @@ const RECEIVE_CHANNELS = [
   'ssl:state-changed',
   'sync:domain-start',
   'sync:domain-progress',
+  'provisioning:state-changed',
+  'provisioning:log',
+  'provisioning:sync-error',
   'cloudflare:sync-completed',
   'cloudflare:sync-error',
   'ssl:sync-completed',
@@ -59,6 +68,22 @@ const RECEIVE_CHANNELS = [
   'updater:error',
   // ── ScalifyLabs: progreso en tiempo real (main → renderer) ──
   'scalify:progreso',
+  // ── Command Center & Fleet ──
+  'server:metrics-update',
+  'fleet:health-progress',
+  'fleet:domain-status',
+  // ── CMS Reconstructor ──
+  'cms:progress',
+  'cms:audit-progress',
+  // ── Rescue Sorter ──
+  'rescuesorter:progress',
+  // ── Security ──
+  'security:credential-progress',
+  // ── Drive ──
+  'drive:sync-complete',
+  'drive:log',
+  // ── Email ──
+  'email:log',
 ];
 
 const INVOKE_CHANNELS = [
@@ -72,10 +97,13 @@ const INVOKE_CHANNELS = [
   'workspace:scan',
   'workspace:scan-domains',
   'module:get-status',
+  'sourcesync:get-state',
+  'sourcesync:deploy',
   'get-deployment-status',
   'get-cloudflare-status',
   'get-ssl-status',
   'get-extraction-status',
+  'drive:stop-sync',
   'ssh:test-connection',
   'server:test-connection',
   'ssh:inject-key',
@@ -87,9 +115,17 @@ const INVOKE_CHANNELS = [
   'config:set-cloudflare-token',
   'config:get-cloudflare-account-id',
   'config:set-cloudflare-account-id',
+  'config:get-google-drive',
+  'config:set-drive-root',
+  'config:select-drive-credentials',
+  'drive:start-sync',
+  'drive:check-auth',
+  'drive:start-auth',
+  'drive:logout',
   // 'plesk:install-ssl' movido a SEND_CHANNELS (usa ipcMain.on, no handle)
   'extraction:check-status',
   'extraction:run-batch',
+  'extraction:extract-ultra-lite',
   'deployment:check-status',
   'deployment:run-batch',
   'syncdns:run-batch',
@@ -129,6 +165,45 @@ const INVOKE_CHANNELS = [
   'scalify:deploy',
   'config:get-github-token',
   'config:set-github-token',
+  // ── Command Center & Fleet ──
+  'server:metrics-fetch',
+  'server:metrics-start',
+  'server:metrics-stop',
+  'fleet:scan-health',
+  'fleet:run-action',
+  'fleet:get-log',
+  'fleet:diagnose-site',
+  'fleet:run-mitigation',
+  // ── CMS Reconstructor ──
+  'cms:get-state',
+  'cms:audit-server',
+  'cms:start-batch',
+  'cms:abort',
+  'reconstructor:obtener-versiones',
+  // ── Rescue Sorter ──
+  'rescuesorter:process',
+  'rescuesorter:diet-mode',
+  'rescuesorter:extract-massive-tar',
+  'rescuesorter:cancel-massive-tar',
+  // ── Extracción Ultra-Lite ──
+  'extraction:extract-ultra-lite',
+  // ── Elementor Pro ──
+  'config:get-elementor-pro',
+  'config:set-elementor-pro',
+  // ── Server management ──
+  'server:edit',
+  'server:resolve-ip',
+  // ── Security ──
+  'security:validate-password',
+  'security:reboot',
+  'security:shutdown',
+  'security:credential-reset',
+  // ── Email / Hostinger Mail ──
+  'email:get-config',
+  'email:set-config',
+  'email:download-domain',
+  'email:download-batch',
+  'email:restore-batch',
 ];
 
 // ── Helper: typed invoke with whitelist validation ──
@@ -166,9 +241,12 @@ contextBridge.exposeInMainWorld('api', {
   receive: (channel, func) => {
     if (RECEIVE_CHANNELS.includes(channel)) {
       // Deliberately strip event as it includes `sender`
-      ipcRenderer.on(channel, (event, ...args) => func(...args));
+      const handler = (event, ...args) => func(...args);
+      ipcRenderer.on(channel, handler);
+      return () => ipcRenderer.removeListener(channel, handler);
     } else {
       console.warn(`Attempted to receive on invalid channel: ${channel}`);
+      return () => {};
     }
   },
 

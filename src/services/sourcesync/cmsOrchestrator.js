@@ -155,10 +155,10 @@ async function runCmsBatch({
 
   const total = domains.length;
 
-  // ── SCP upload del ZIP de Elementor (una sola vez) ─────────────────────────
-  if (localZipPath && mode === 'full' && !dryRun) {
-    console.log(`[CMS Batch] Iniciando subida de ZIP de Elementor: ${localZipPath}`);
-    onProgress({ type: 'upload-start', msg: `Subiendo Elementor Pro ZIP al servidor "${serverName}"...` });
+  // ── SCP upload del ZIP de Elementor/Plugin (una sola vez) ─────────────────────────
+  if (localZipPath && (mode === 'full' || mode === 'solo-plugin') && !dryRun) {
+    console.log(`[CMS Batch] Iniciando subida de ZIP de Plugin: ${localZipPath}`);
+    onProgress({ type: 'upload-start', msg: `Subiendo Plugin ZIP al servidor "${serverName}"...` });
     try {
       remoteZipPath = await uploadElementorZip(ssh, sshCredentials, localZipPath);
       console.log(`[CMS Batch] ZIP subido exitosamente a ${remoteZipPath}`);

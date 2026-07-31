@@ -131,6 +131,19 @@ class ConfigManager {
   }
 
   /**
+   * Retorna la ruta al directorio temporal para operaciones.
+   */
+  getTempDownloadPath() {
+    const ws = this.getWorkspacePath();
+    const tempPath = path.join(ws, 'temp');
+    const fs = require('fs');
+    if (!fs.existsSync(tempPath)) {
+      fs.mkdirSync(tempPath, { recursive: true });
+    }
+    return tempPath;
+  }
+
+  /**
    * Retorna la ruta raíz del workspace (alias de getWorkspacePath).
    */
   getBasePath() {
@@ -278,6 +291,11 @@ class ConfigManager {
       const encrypted = safeStorage.encryptString(this.config.cloudflare.apiToken);
       this.config.cloudflare.apiToken = '__ss__' + encrypted.toString('base64');
     }
+
+    if (this.config.hostingerMail?.apiToken) {
+      const encrypted = safeStorage.encryptString(this.config.hostingerMail.apiToken);
+      this.config.hostingerMail.apiToken = '__ss__' + encrypted.toString('base64');
+    }
   }
 
   async decryptConfig() {
@@ -337,6 +355,10 @@ class ConfigManager {
 
     if (this.config.cloudflare?.apiToken && typeof this.config.cloudflare.apiToken === 'string') {
       this.config.cloudflare.apiToken = decryptField(this.config.cloudflare.apiToken);
+    }
+
+    if (this.config.hostingerMail?.apiToken && typeof this.config.hostingerMail.apiToken === 'string') {
+      this.config.hostingerMail.apiToken = decryptField(this.config.hostingerMail.apiToken);
     }
   }
 
@@ -474,6 +496,14 @@ class ConfigManager {
       cloudflare: {
         apiToken: "",
         zoneId: ""
+      },
+      elementorPro: {
+        zipPath: "",
+        licenseKey: ""
+      },
+      googleDrive: {
+        credentialsPath: "",
+        rootFolderId: ""
       },
       workspaceRoot: ""
     };

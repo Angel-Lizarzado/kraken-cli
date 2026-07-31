@@ -242,6 +242,30 @@ const Dashboard: React.FC<DashboardProps> = ({
     [config, saveConfig, loadConfig, onLog, createAccountFolder, createCloudFolder],
   );
 
+  // ── Modal delete ──
+  const handleModalDelete = useCallback(async () => {
+    if (!formModal.editData || !config) return;
+    const { itemName, accountName } = formModal.editData;
+
+    if (window.confirm(`¿Eliminar definitivamente "${itemName}"? Esta acción no se puede deshacer.`)) {
+      if (formModal.targetType === 'server') {
+        await handleDeleteServer(itemName);
+      } else {
+        const updatedAccounts = JSON.parse(JSON.stringify(config.accounts || []));
+        const accountIndex = updatedAccounts.findIndex((a: any) => a.name === accountName);
+        if (accountIndex >= 0) {
+          updatedAccounts[accountIndex].originClouds = updatedAccounts[accountIndex].originClouds.filter(
+            (c: any) => c.name !== itemName
+          );
+          await saveConfig({ accounts: updatedAccounts } as any);
+          await loadConfig();
+          onLog(`Cloud "${itemName}" eliminado correctamente.`, 'success');
+        }
+      }
+      setFormModal({ isOpen: false, targetType: 'server' });
+    }
+  }, [formModal, config, handleDeleteServer, saveConfig, loadConfig, onLog]);
+
   // ── Inject key helper ──
   const handleInjectKey = useCallback(
     async (
@@ -476,7 +500,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
           <div className="spinner mx-auto" />
-          <p className="mt-4 text-sm" style={{ color: 'var(--text-muted)' }}>
+          <p className="mt-4 text-sm" >
             Cargando configuración...
           </p>
         </div>
@@ -484,277 +508,174 @@ const Dashboard: React.FC<DashboardProps> = ({
     );
   }
 
-  // ── Render ──
   return (
-    <AnimatePresence mode="wait">
-      {/* ── Command Center (full-screen detail) ── */}
-      {commandServer ? (
-        <ServerCommandCenter
-          key={`cc-${commandServer.name}`}
-          server={commandServer}
-          onBack={() => setCommandServer(null)}
-          onLog={onLog}
-        />
-      ) : (
-        <motion.div
-          key="dashboard"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.15 }}
-          className="space-y-6"
-        >
-      {/* ── Header ── */}
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="font-display text-xl font-bold">Panel de servidores</h1>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            Gestión de servidores Plesk y clouds Hostinger
-          </p>
-        </div>
-        <LookupBar onLookup={handleLookup} />
-      </div>
+    <div className="flex h-full w-full overflow-hidden bg-background">
+      {/* ── Left Master Panel (Lista) ── */}
+      <div 
+        className={`flex-shrink-0 flex flex-col h-full overflow-y-auto border-r transition-[width,background-color] duration-300 ease-in-out ${commandServer ? 'w-[360px] bg-surface-container-lowest' : 'w-full bg-background'}`}
+        
+      >
+        <div className={`p-6 space-y-6 ${commandServer ? 'opacity-90 scale-[0.98] origin-top' : ''} transition-[opacity,transform] duration-300`}>
+          {/* ── Header ── */}
+          <div className="flex items-center justify-between gap-4 flex-wrap">
+            <div>
+              <h1 className="font-display text-xl font-bold">Panel de servidores</h1>
+              {!commandServer && (
+                <p className="text-sm text-on-surface-variant" >
+                  Gestión de servidores Plesk y clouds Hostinger
+                </p>
+              )}
+            </div>
+            {!commandServer && <LookupBar onLookup={handleLookup} />}
+          </div>
 
-      {/* ── Quick Stats ── */}
-      <div className="flex gap-4 text-sm" style={{ color: 'var(--text-muted)' }}>
-        <span>{totalServers} servidores configurados</span>
-        <span aria-hidden="true">·</span>
-        <span>{totalClouds} clouds configurados</span>
-      </div>
-
-      {/* ── Servers Section ── */}
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-display text-base font-bold">Servidores destino (Plesk)</h2>
-          <button onClick={() => openAddForm('server')} className="btn btn--primary text-xs">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            Agregar servidor
-          </button>
-        </div>
-
-        <ServerGrid
-          servers={servers}
-          selectedServer={selectedServer}
-          onSelectServer={handleServerSelect}
-        />
-
-        {/* ── Drawer ── */}
-        <AnimatePresence>
-          {selectedServer && (
-            <>
-              {/* Overlay */}
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="fixed inset-0 z-30"
-                style={{ backgroundColor: 'oklch(0 0 0 / 0.4)' }}
-                onClick={closeDrawer}
-              />
-              {/* Drawer panel */}
-              <motion.div
-                initial={{ x: '100%', opacity: 0 }}
-                animate={{ x: 0, opacity: 1 }}
-                exit={{ x: '100%', opacity: 0 }}
-                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-                className="fixed right-0 top-0 h-full w-full max-w-lg z-40 overflow-hidden"
-                style={{
-                  backgroundColor: 'var(--surface-raised)',
-                  borderLeft: '1px solid var(--border-default)',
-                }}
-              >
-                <div className="relative z-40 h-full flex flex-col">
-                  {/* Drawer header */}
-                  <div className="flex items-center justify-between p-4 border-b" style={{ borderColor: 'var(--border-default)' }}>
-                    <div className="flex items-center gap-2">
-                      <Server size={18} />
-                      <h2 className="font-display font-bold text-base">{selectedServer.name}</h2>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setHealthCheckServer(selectedServer.name)}
-                        className="btn btn--ghost p-1.5 text-xs flex items-center gap-1"
-                        style={{ color: 'var(--color-accent)' }}
-                        title="Monitor de salud de dominios"
-                      >
-                        <HeartPulse size={14} />
-                        Salud
-                      </button>
-                      <button
-                        onClick={() => {
-                          if (window.confirm(`¿Eliminar el servidor "${selectedServer.name}"? Esta acción no se puede deshacer.`)) {
-                            handleDeleteServer(selectedServer.name);
-                          }
-                        }}
-                        className="btn btn--ghost p-1.5 text-xs"
-                        style={{ color: 'var(--color-error, #ef4444)' }}
-                        title="Eliminar servidor"
-                      >
-                        Eliminar
-                      </button>
-                      <button onClick={closeDrawer} className="btn btn--ghost p-1.5">
-                        <X size={16} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Drawer tabs */}
-                  <div className="flex border-b" style={{ borderColor: 'var(--border-default)' }}>
-                    {(['Métricas', 'Logs', 'Danger Zone'] as const).map((tab) => (
-                      <button
-                        key={tab}
-                        onClick={() => setDrawerTab(tab)}
-                        className="flex-1 py-2.5 text-xs font-medium transition-colors"
-                        style={{
-                          color: drawerTab === tab ? 'var(--color-accent)' : 'var(--text-muted)',
-                          borderBottom: drawerTab === tab ? '2px solid var(--color-accent)' : '2px solid transparent',
-                        }}
-                      >
-                        {tab}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Drawer content */}
-                  <div className="flex-1 overflow-y-auto p-4">
-                    {drawerTab === 'Métricas' && (
-                      <DrawerMetrics
-                        server={selectedServer}
-                        onRunDiagnostics={handleRunDiagnostics}
-                        onLog={onLog as (message: string, type: LogLevel) => void}
-                        execServerCommand={execServerCommand}
-                        onMetricsRefresh={loadServerDiagnostics}
-                        onStorageLoaded={(data) =>
-                          setStorageCache((prev) => ({ ...prev, [selectedServer.name]: data }))
-                        }
-                      />
-                    )}
-                    {drawerTab === 'Logs' && (
-                      <DrawerLogs
-                        serverLogs={serverLogs}
-                        logsLoading={logsLoading}
-                        onRefreshLogs={handleRefreshLogs}
-                      />
-                    )}
-                    {drawerTab === 'Danger Zone' && (
-                      <DrawerDangerZone
-                        server={selectedServer}
-                        onMaintenanceAction={handleMaintenanceAction}
-                        onPurgeBackups={handlePurgeBackups}
-                        onMetricsRefresh={loadServerDiagnostics}
-                        initialEstimatedSavings={storageCache[selectedServer.name]?.estimatedSavings}
-                      />
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            </>
+          {/* ── Quick Stats ── */}
+          {!commandServer && (
+            <div className="flex gap-4 text-sm text-on-surface-variant" >
+              <span>{totalServers} servidores configurados</span>
+              <span aria-hidden="true">·</span>
+              <span>{totalClouds} clouds configurados</span>
+            </div>
           )}
-        </AnimatePresence>
-      </section>
 
-      {/* ── Clouds Section ── */}
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-display text-base font-bold">Clouds origen (Hostinger)</h2>
-          <button onClick={() => openAddForm('cloud')} className="btn btn--primary text-xs">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-            </svg>
-            Agregar cloud
-          </button>
-        </div>
+          {/* ── Servers Section ── */}
+          <section>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display text-base font-bold">Servidores destino (Plesk)</h2>
+              <button onClick={() => openAddForm('server')} className="px-3 py-1.5 bg-secondary text-on-secondary rounded flex items-center font-title-sm hover:brightness-110 transition-all">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                {!commandServer && <span className="ml-1">Agregar servidor</span>}
+              </button>
+            </div>
 
-        <div className="card">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr
-                  className="border-b text-xs font-medium"
-                  style={{ borderBottomColor: 'var(--border-default)', color: 'var(--text-muted)' }}
-                >
-                  <th className="text-left py-3 px-4 font-medium">Nombre</th>
-                  <th className="text-left py-3 px-4 font-medium">Host</th>
-                  <th className="text-left py-3 px-4 font-medium">SSH</th>
-                  <th className="text-left py-3 px-4 font-medium">Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.map((account) =>
-                  (account.originClouds || []).map((cloud) => (
-                    <tr
-                      key={`${account.name}-${cloud.name}`}
-                      className="border-b transition-colors duration-150 ease-out"
-                      style={{ borderBottomColor: 'var(--border-default)' }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = 'var(--surface-overlay)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = 'transparent';
-                      }}
-                    >
-                      <td className="py-3 px-4">
-                        <div className="font-medium">{cloud.name}</div>
-                        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                          {account.name}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="font-mono text-xs">
-                          {cloud.sshCredentials.host}:{cloud.sshCredentials.port}
-                        </div>
-                        <div className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                          Usuario: {cloud.sshCredentials.username}
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className={`tag ${cloud.isLinked ? 'tag--success' : 'tag--error'}`}>
-                          {cloud.isLinked ? 'Conectado' : 'Desconectado'}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4">
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => openEditForm('cloud', account.name, cloud.name)}
-                            className="btn btn--ghost text-xs"
+            <ServerGrid
+              servers={servers}
+              selectedServer={commandServer}
+              onSelectServer={handleServerSelect}
+              compact={!!commandServer}
+            />
+          </section>
+
+          {/* ── Clouds Section ── */}
+          {!commandServer && (
+            <section>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-display text-base font-bold">Clouds origen (Hostinger)</h2>
+                <button onClick={() => openAddForm('cloud')} className="px-3 py-1.5 bg-secondary text-on-secondary rounded flex items-center font-title-sm hover:brightness-110 transition-all">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+                  </svg>
+                  Agregar cloud
+                </button>
+              </div>
+
+              <div className="bg-surface-container-low border border-outline-variant rounded overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr
+                        className="border-b text-xs font-medium text-on-surface-variant border-b border-outline-variant/50"
+                      >
+                        <th className="text-left py-3 px-4 font-medium">Nombre</th>
+                        <th className="text-left py-3 px-4 font-medium">Host</th>
+                        <th className="text-left py-3 px-4 font-medium">SSH</th>
+                        <th className="text-left py-3 px-4 font-medium">Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {accounts.map((account) =>
+                        (account.originClouds || []).map((cloud) => (
+                          <tr
+                            key={`${account.name}-${cloud.name}`}
+                            className="border-b transition-colors duration-150 ease-out border-b border-outline-variant/30 hover:bg-surface-container-high transition-colors"
                           >
-                            Editar
-                          </button>
-                          {!cloud.isLinked && (
-                            <button
-                              onClick={() => handleLinkSSH('cloud', cloud.name)}
-                              className="btn text-xs"
-                              style={{
-                                backgroundColor: 'oklch(0.55 0.15 75 / 0.2)',
-                                color: 'var(--color-warning)',
-                                border: '1px solid oklch(0.55 0.15 75 / 0.25)',
-                              }}
-                            >
-                              Vincular SSH
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  )),
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div
-            className="px-4 py-3 text-xs"
-            style={{
-              color: 'var(--text-muted)',
-              backgroundColor: 'var(--surface-base)',
-            }}
-          >
-            Los clouds Hostinger son entidades de configuración. Se usan como origen de datos en el módulo
-            de extracción.
-          </div>
+                            <td className="py-3 px-4">
+                              <div className="font-medium">{cloud.name}</div>
+                              <div className="text-xs" >
+                                {account.name}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="font-mono text-xs">
+                                {cloud.sshCredentials.host}:{cloud.sshCredentials.port}
+                              </div>
+                              <div className="text-xs" >
+                                Usuario: {cloud.sshCredentials.username}
+                              </div>
+                            </td>
+                            <td className="py-3 px-4">
+                              <span className={`tag ${cloud.isLinked ? 'tag--success' : 'tag--error'}`}>
+                                {cloud.isLinked ? 'Conectado' : 'Desconectado'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4">
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => openEditForm('cloud', account.name, cloud.name)}
+                                  className="px-3 py-1.5 text-on-surface-variant hover:text-on-surface hover:bg-surface-container rounded transition-all font-title-sm text-xs"
+                                >
+                                  Editar
+                                </button>
+                                {!cloud.isLinked && (
+                                  <button
+                                    onClick={() => handleLinkSSH('cloud', cloud.name)}
+                                    className="btn text-xs px-3 py-1.5 text-xs font-title-sm rounded bg-tertiary/20 text-tertiary border border-tertiary/30 hover:bg-tertiary/30 transition-all"
+                                  >
+                                    Vincular SSH
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div
+                  className="px-4 py-3 text-xs bg-surface-container-lowest text-on-surface-variant"
+                >
+                  Los clouds Hostinger son entidades de configuración. Se usan como origen de datos en el módulo
+                  de extracción.
+                </div>
+              </div>
+            </section>
+          )}
         </div>
-      </section>
+      </div>
+
+      {/* ── Right Detail Panel (Command Center Drawer) ── */}
+      <AnimatePresence>
+        {commandServer && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm"
+              onClick={() => setCommandServer(null)}
+            />
+            <motion.div
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="absolute top-0 right-0 h-full shadow-2xl flex flex-col overflow-y-auto z-50 w-[90%] max-w-[1200px] bg-background border-l border-outline-variant p-lg"
+            >
+              <ServerCommandCenter
+                key={`cc-${commandServer.name}`}
+                server={commandServer}
+                onBack={() => setCommandServer(null)}
+                onEdit={() => openEditForm('server', undefined, commandServer.name)}
+                onLog={onLog}
+              />
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
 
       {/* ── Shutdown Confirmation ── */}
       {showConfirmDialog && (
@@ -773,6 +694,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         editData={formModal.editData}
         accounts={accounts}
         onSave={handleModalSave}
+        onDelete={formModal.editData ? handleModalDelete : undefined}
         testConnection={testConnection}
         onInjectKey={handleInjectKey}
         onLog={onLog}
@@ -786,9 +708,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         serverName={healthCheckServer || ''}
         onLog={onLog}
       />
-      </motion.div>
-      )}
-    </AnimatePresence>
+    </div>
   );
 };
 

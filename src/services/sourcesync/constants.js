@@ -1,12 +1,12 @@
 'use strict';
 
 const TIMEOUTS = {
-  DEFAULT: 30000,
-  MEDIUM: 60000,
-  LONG: 90000,
-  X_LONG: 120000,
-  XX_LONG: 180000,
-  XXX_LONG: 300000,
+  DEFAULT: 120000,    // 2 min
+  MEDIUM: 300000,     // 5 min
+  LONG: 600000,       // 10 min
+  X_LONG: 1200000,    // 20 min
+  XX_LONG: 1800000,   // 30 min
+  XXX_LONG: 3600000,  // 60 min
 };
 
 const CONFIG_CONSTANTS = [

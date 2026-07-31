@@ -5,15 +5,16 @@ interface ServerGridProps {
   servers: Server[];
   selectedServer: Server | null;
   onSelectServer: (server: Server) => void;
+  compact?: boolean;
 }
 
-export default function ServerGrid({ servers, selectedServer, onSelectServer }: ServerGridProps) {
+export default function ServerGrid({ servers, selectedServer, onSelectServer, compact = false }: ServerGridProps) {
   return (
     <div
       className="grid"
       style={{
         display: 'grid',
-        gridTemplateColumns: 'repeat(auto-fit, minmax(350px, 1fr))',
+        gridTemplateColumns: compact ? '1fr' : 'repeat(auto-fit, minmax(350px, 1fr))',
         gap: '16px',
       }}
     >

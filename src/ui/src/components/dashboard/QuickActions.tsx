@@ -60,8 +60,7 @@ export default function QuickActions({
   return (
     <div>
       <div
-        className="text-xs font-medium mb-2"
-        style={{ color: 'var(--text-muted)' }}
+        className="text-xs font-medium mb-2 text-on-surface-variant"
       >
         Acciones Rápidas
       </div>

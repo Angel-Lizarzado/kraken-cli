@@ -183,7 +183,7 @@ async function orchestrarDespliegue(ssh, config, onProgreso) {
       llavePub = pleskPublicKey;
     };
 
-    const resultadoGit = await configurarRepoEnPlesk(ssh, domain, httpsUrl, registerKeyFn, { rama });
+    const resultadoGit = await configurarRepoEnPlesk(ssh, domain, httpsUrl, registerKeyFn, { rama, versionNode });
     urlSsh = resultadoGit.urlSsh;
 
     emitirProgreso(

@@ -477,6 +477,366 @@ class ExtractionService {
     }
   }
 
+  // ================================================================
+  // MÉTODO: extractWordPressUltraLite
+  // Extrae SOLO lo necesario desde Hostinger:
+  //   1. wp-content/uploads/ (comprimido como uploads.tar.gz en temp remoto)
+  //   2. DB dump CRUDO — sin limpiar (seguridad de integridad del cloud)
+  //   3. config.json (prefix, theme, plugins — generado remotamente)
+  //
+  // La limpieza de la DB ocurre en el despliegue (Plesk), nunca aquí.
+  //
+  // Resultado final local:
+  //   {cloud}/{dominio}/{dominio}.tar.gz
+  //   Dentro del tar: uploads/ + config.json + {dominio}.sql
+  // ================================================================
+
+  async extractWordPressUltraLite(accountName, cloudName, domain, taskId) {
+    const startTime = Date.now();
+    let sshClient = null;
+    let localTempDomainPath = null;
+
+    try {
+      const safeDomain = this.getSafeDomainPath(domain);
+      if (safeDomain !== domain) {
+        this.emitLog(taskId, domain, 0, `[IDN] Dominio internacional: ${domain} → ${safeDomain}`);
+      }
+
+      const config = this.configManager.getConfig();
+      const account = config.accounts.find(acc => acc.name === accountName);
+      if (!account) throw new Error(`Cuenta "${accountName}" no encontrada`);
+
+      const cloud = account.originClouds.find(c => c.name === cloudName);
+      if (!cloud) throw new Error(`Cloud "${cloudName}" no encontrado en cuenta "${accountName}"`);
+      if (!cloud.isLinked) throw new Error(`Cloud "${cloudName}" no tiene SSH vinculado`);
+
+      // ── Skip si ya está en formato Ultra-Lite ──
+      try {
+        const existingDomainPath = this.workspaceManager.getDomainPath(accountName, cloudName, safeDomain);
+        if (existingDomainPath) {
+          const existingTar = path.join(existingDomainPath, `${safeDomain}.tar.gz`);
+          if (fsSync.existsSync(existingTar)) {
+            let hasConfig = false;
+            await tar.t({ file: existingTar, onentry: (entry) => {
+              if (entry.path === 'config.json' || entry.path.endsWith('/config.json')) hasConfig = true;
+            }}).catch(() => {});
+            if (hasConfig) {
+              this.emitLog(taskId, domain, 100, `[SKIP] ${domain} ya está en formato Ultra-Lite.`);
+              this.progressEmitter.emitProgress({ taskId, module: 'extraction', domain, progress: 100, message: `[SKIP] ${domain} ya procesado.` });
+              return { success: true, accountName, cloudName, domain, skipped: true, tarPath: existingTar };
+            }
+            // Limpiar residuos del proceso anterior aunque no sea Ultra-Lite
+            const wpConfigLoose = path.join(existingDomainPath, 'wp-config.php');
+            const residualHostinger = path.join(existingDomainPath, `${safeDomain}-hostinger.sql`);
+            if (fsSync.existsSync(wpConfigLoose)) {
+              try { await fsp.unlink(wpConfigLoose); } catch (_) {}
+              this.emitLog(taskId, domain, 1, `[CLEAN] wp-config.php residual eliminado.`);
+            }
+            if (fsSync.existsSync(residualHostinger)) {
+              try { await fsp.unlink(residualHostinger); } catch (_) {}
+            }
+          }
+        }
+      } catch (_) { /* si falla la verificación, continuar con la extracción */ }
+
+      this.emitLog(taskId, domain, 1, `[ULTRA-LITE] Iniciando extracción quirúrgica: ${domain}`);
+
+      await this.validateCloudConnection(cloud, accountName, cloudName, taskId);
+
+      const sshCredentials = { ...cloud.sshCredentials };
+      if (!sshCredentials.privateKey) {
+        const cfg = this.configManager.getConfig();
+        const keyPath = cfg?.sshKeys?.privateKeyPath || '~/.ssh/id_rsa';
+        const resolvedPath = this.resolvePrivateKeyPath(keyPath);
+        try { sshCredentials.privateKey = fsSync.readFileSync(resolvedPath, 'utf8'); } catch (_) {}
+      }
+
+      try {
+        sshClient = await this.sshService.connect(sshCredentials, `extraction-lite-${taskId}`);
+      } catch (connectError) {
+        const msg = connectError.message || '';
+        if (msg.includes('All configured authentication methods failed')) {
+          throw new Error(`[SSH] Error de autenticación. Verifique la llave SSH para ${sshCredentials.host}.`);
+        }
+        throw new Error(`[SSH] Error de conexión: ${msg}`);
+      }
+
+      // ── Rutas locales temporales ──
+      const tempDownloadDir = this.configManager.getTempDownloadPath();
+      localTempDomainPath = path.join(tempDownloadDir, `ulite-${Date.now()}-${safeDomain}`);
+      await fsp.mkdir(localTempDomainPath, { recursive: true });
+
+      // ── Detectar ruta remota ──
+      this.emitLog(taskId, domain, 10, `[FS] Localizando WordPress en el servidor...`);
+      const whoamiResult = await this.execWithTimeout(sshClient, 'whoami');
+      const pwdResult = await this.execWithTimeout(sshClient, 'pwd');
+      const sshUser = whoamiResult.stdout.trim();
+      const currentPwd = pwdResult.stdout.trim();
+      const remotePath = await this.resolveWordPressPath(sshClient, safeDomain, sshUser, currentPwd);
+      this.emitLog(taskId, domain, 12, `[FS] WordPress encontrado en: ${remotePath}`);
+
+      // ── Leer wp-config.php ──
+      this.emitLog(taskId, domain, 15, `[WP] Leyendo wp-config.php...`);
+      const cfgResult = await this.execWithTimeout(sshClient, `cat "${remotePath}/wp-config.php"`);
+      if (cfgResult.code !== 0) throw new Error(`[WP] No se pudo leer wp-config.php: ${cfgResult.stderr}`);
+      const configContent = cfgResult.stdout;
+
+      let dbName = null, dbUser = null, dbPass = null, dbPrefix = 'wp_';
+      for (const line of configContent.split('\n')) {
+        const t = line.trim();
+        if (t.startsWith('//') || t.startsWith('#') || t.startsWith('/*')) continue;
+        const nameMatch  = t.match(/define\s*\(\s*['"]DB_NAME['"]\s*,\s*['"]([^'"]+)['"]\s*\)/);
+        const userMatch  = t.match(/define\s*\(\s*['"]DB_USER['"]\s*,\s*['"]([^'"]+)['"]\s*\)/);
+        const passMatch  = t.match(/define\s*\(\s*['"]DB_PASSWORD['"]\s*,\s*['"]([^'"]+)['"]\s*\)/);
+        const prefixMatch = t.match(/\$table_prefix\s*=\s*['"]([^'"]+)['"]/);
+        if (nameMatch)  dbName   = nameMatch[1];
+        if (userMatch)  dbUser   = userMatch[1];
+        if (passMatch)  dbPass   = passMatch[1];
+        if (prefixMatch) dbPrefix = prefixMatch[1];
+      }
+      if (!dbName) throw new Error(`[WP] No se pudo extraer DB_NAME de wp-config.php`);
+      this.emitLog(taskId, domain, 18, `[WP] DB: ${dbName} | Prefix: ${dbPrefix}`);
+
+      // ── Carpeta temporal remota ──
+      const crypto = require('crypto');
+      const token = crypto.randomBytes(5).toString('hex');
+      const tempFolderName = `krk_ulite_${token}`;
+      const tempRemotePath = `${remotePath}/${tempFolderName}`;
+
+      await this.execWithTimeout(sshClient, `find "${remotePath}" -maxdepth 1 -name 'krk_ulite_*' -type d -exec rm -rf {} + 2>/dev/null || true`);
+      await this.execWithTimeout(sshClient, `mkdir -p "${tempRemotePath}"`);
+
+      // ── PASO 1: Escanear plugins y tema activo ──
+      this.emitLog(taskId, domain, 20, `[CONFIG] Escaneando plugins y tema activo...`);
+      const escapedPass = dbPass.replace(/'/g, "'\\''");
+      const themeCmd = `mysql -u${dbUser} -p'${escapedPass}' ${dbName} -Nse "SELECT option_value FROM ${dbPrefix}options WHERE option_name='template' LIMIT 1;" 2>/dev/null`;
+      const themeResult = await this.execWithTimeout(sshClient, themeCmd);
+      const theme = (themeResult.stdout || 'hello-elementor').trim().split('\n')[0] || 'hello-elementor';
+
+      const pluginsCmd = `ls -1 "${remotePath}/wp-content/plugins/" 2>/dev/null || echo ""`;
+      const pluginsResult = await this.execWithTimeout(sshClient, pluginsCmd);
+      const plugins = (pluginsResult.stdout || '').split('\n').map(p => p.trim()).filter(p => p && p !== 'index.php');
+
+      // ── PASO 2: Generar config.json remoto ──
+      const configJson = JSON.stringify({ db_prefix: dbPrefix, theme, plugins }, null, 2);
+      // Escribir vía heredoc para evitar problemas de quoting
+      await this.execWithTimeout(sshClient,
+        `printf '%s' '${configJson.replace(/'/g, "'\\''")}' > "${tempRemotePath}/config.json"`
+      );
+      this.emitLog(taskId, domain, 25, `[CONFIG] config.json generado (${plugins.length} plugins, tema: ${theme})`);
+
+      // ── PASO 3: Comprimir uploads en el servidor ──
+      this.emitLog(taskId, domain, 30, `[TAR] Comprimiendo uploads/...`);
+      const remoteUploadsTar = `${tempRemotePath}/uploads.tar.gz`;
+      const uploadsPath = `${remotePath}/wp-content/uploads`;
+      const uploadsCheck = await this.execWithTimeout(sshClient, `test -d "${uploadsPath}" && echo "OK" || echo "MISSING"`);
+
+      if ((uploadsCheck.stdout || '').trim() === 'OK') {
+        const tarResult = await this.execWithTimeout(sshClient,
+          `tar -czf "${remoteUploadsTar}" -C "${remotePath}/wp-content" uploads 2>/dev/null`
+        );
+        if (tarResult.code !== 0) {
+          this.emitLog(taskId, domain, 32, `[TAR-WARN] Error leve comprimiendo uploads: ${(tarResult.stderr || '').substring(0, 100)}`);
+        }
+      } else {
+        this.emitLog(taskId, domain, 32, `[WARN] No hay carpeta uploads/ — creando archivo vacío`);
+        await this.execWithTimeout(sshClient,
+          `mkdir -p "${uploadsPath}" && tar -czf "${remoteUploadsTar}" -C "${remotePath}/wp-content" uploads`
+        );
+      }
+
+      // ── PASO 4: Dump DB crudo ──
+      this.emitLog(taskId, domain, 45, `[DB] Dumpeando ${dbName} (sin modificar — integridad garantizada)...`);
+      const remoteSqlPath = `${tempRemotePath}/${safeDomain}.sql`;
+      const dumpCmd = `mysqldump --no-tablespaces --default-character-set=utf8mb4 -u${dbUser} -p'${escapedPass}' ${dbName} > "${remoteSqlPath}"`;
+      const dumpResult = await this.execWithTimeout(sshClient, dumpCmd);
+      if (dumpResult.code !== 0) throw new Error(`[DB] mysqldump falló: ${dumpResult.stderr || dumpResult.stdout}`);
+      this.emitLog(taskId, domain, 55, `[DB] Dump completado.`);
+
+      // ── PASO 5: Descargar los 3 archivos ──
+      const localUploadsTar  = path.join(localTempDomainPath, 'uploads.tar.gz');
+      const localSqlPath     = path.join(localTempDomainPath, `${safeDomain}.sql`);
+      const localConfigJson  = path.join(localTempDomainPath, 'config.json');
+      const maxAttempts = 3;
+
+      // uploads.tar.gz
+      this.emitLog(taskId, domain, 60, `[DOWNLOAD] Descargando uploads...`);
+      const uploadsUrl = `https://${domain}/${tempFolderName}/uploads.tar.gz`;
+      let uploadsDone = false;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await this.downloadFileViaHttp(uploadsUrl, localUploadsTar, (r, t, pct) => {
+            this.emitLog(taskId, domain, 60 + Math.round(pct * 0.10), `[HTTP] uploads ${pct}%`, { consoleThrottleKey: `ul-${domain}` });
+          });
+          uploadsDone = true; break;
+        } catch (e) {
+          if (attempt === maxAttempts) {
+            this.emitLog(taskId, domain, 60, `[SFTP] HTTP falló, usando SFTP para uploads...`);
+            await this.downloadFileViaSftp(sshClient, remoteUploadsTar, localUploadsTar, (r, t, pct) => {
+              this.emitLog(taskId, domain, 60 + Math.round(pct * 0.10), `[SFTP] uploads ${pct}%`, { consoleThrottleKey: `ul-sftp-${domain}` });
+            });
+            uploadsDone = true;
+          } else { await new Promise(r => setTimeout(r, 8000)); }
+        }
+      }
+
+      // SQL
+      this.emitLog(taskId, domain, 72, `[DOWNLOAD] Descargando base de datos...`);
+      const sqlUrl = `https://${domain}/${tempFolderName}/${safeDomain}.sql`;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          await this.downloadFileViaHttp(sqlUrl, localSqlPath, (r, t, pct) => {
+            this.emitLog(taskId, domain, 72 + Math.round(pct * 0.15), `[HTTP] DB ${pct}%`, { consoleThrottleKey: `sql-${domain}` });
+          });
+          break;
+        } catch (e) {
+          if (attempt === maxAttempts) {
+            this.emitLog(taskId, domain, 72, `[SFTP] HTTP falló, usando SFTP para SQL...`);
+            await this.downloadFileViaSftp(sshClient, remoteSqlPath, localSqlPath, (r, t, pct) => {
+              this.emitLog(taskId, domain, 72 + Math.round(pct * 0.15), `[SFTP] DB ${pct}%`, { consoleThrottleKey: `sql-sftp-${domain}` });
+            });
+          } else { await new Promise(r => setTimeout(r, 8000)); }
+        }
+      }
+
+      // config.json
+      const configUrl = `https://${domain}/${tempFolderName}/config.json`;
+      try {
+        await this.downloadFileViaHttp(configUrl, localConfigJson);
+      } catch {
+        await this.downloadFileViaSftp(sshClient, `${tempRemotePath}/config.json`, localConfigJson);
+      }
+
+      // ── Validar SQL ──
+      const sqlSize = await this.getFileSize(localSqlPath);
+      if (sqlSize === 0) throw new Error(`[DB] SQL descargado vacío para ${domain}`);
+      const uploadsSize = await this.getFileSize(localUploadsTar);
+
+      // ── PASO 6: Descomprimir uploads + empaquetar todo en {dominio}.tar.gz ──
+      this.emitLog(taskId, domain, 90, `[PACK] Armando paquete Ultra-Lite...`);
+
+      // Crear carpeta destino definitiva
+      const finalDomainPath = await this.workspaceManager.createDomainFolder(accountName, cloudName, safeDomain);
+
+      // Descomprimir uploads.tar.gz → uploads/ dentro de localTempDomainPath
+      try {
+        await tar.x({ file: localUploadsTar, cwd: localTempDomainPath, strict: false });
+        
+        // Verificar que la descompresión realmente generó la carpeta
+        if (!fsSync.existsSync(path.join(localTempDomainPath, 'uploads'))) {
+          throw new Error('El archivo tar no contenía la estructura uploads/ esperada.');
+        }
+      } catch (e) {
+        const errMsg = `Fallo crítico: No se pudo descomprimir uploads.tar.gz (posible bloqueo de seguridad o archivo corrupto). Error: ${e.message}`;
+        this.emitLog(taskId, domain, 91, `[ERROR] ${errMsg}`);
+        throw new Error(errMsg);
+      }
+      // Eliminar el uploads.tar.gz intermediario
+      try { await fsp.unlink(localUploadsTar); } catch (_) {}
+
+      // Colectar items del temp (uploads/ + config.json + {dominio}.sql)
+      const tempContents = await fsp.readdir(localTempDomainPath);
+      const itemsToInclude = tempContents.filter(f => f !== 'logs');
+
+      const finalTarPath = path.join(finalDomainPath, `${safeDomain}.tar.gz`);
+      await tar.c(
+        { gzip: true, file: finalTarPath, cwd: localTempDomainPath, strict: false },
+        itemsToInclude
+      );
+
+      const finalSize = await this.getFileSize(finalTarPath);
+      const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+      this.emitLog(taskId, domain, 98, `[PACK] ${safeDomain}.tar.gz → ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // Registro en dominios_procesados.json
+      await this.workspaceManager.updateDominiosProcesados(accountName, cloudName, [domain]);
+
+      this.emitLog(taskId, domain, 100, `[✅ ULTRA-LITE] ${domain} listo en ${duration}s — ${(finalSize / 1024 / 1024).toFixed(2)} MB`);
+
+      // ── PASO 7: Descarga de emails ──
+      try {
+        // Opción A: Extraer correos gratuitos directamente desde el disco del Hosting Web vía SSH (~/mail/dominio)
+        const mailCheckCmd = `test -d "$HOME/mail/${domain}" && echo "OK" || (test -d "$HOME/mail/${safeDomain}" && echo "OK" || echo "MISSING")`;
+        const mailCheck = await this.execWithTimeout(sshClient, mailCheckCmd);
+
+        let sshMailExtracted = false;
+        if ((mailCheck.stdout || '').trim() === 'OK') {
+          this.emitLog(taskId, domain, 90, `[EMAIL-SSH] Carpeta de correo detectada en Hosting Web. Comprimiendo buzones...`);
+          const remoteEmailTar = `${tempRemotePath}/emails.tar.gz`;
+          const tarEmailRes = await this.execWithTimeout(sshClient,
+            `tar -czf "${remoteEmailTar}" -C "$HOME/mail" "${domain}" 2>/dev/null || tar -czf "${remoteEmailTar}" -C "$HOME/mail" "${safeDomain}" 2>/dev/null`
+          );
+          if (tarEmailRes.code === 0) {
+            const localEmailsTar = path.join(finalDomainPath, 'emails.tar.gz');
+            await this.sshService.downloadFile(sshClient, remoteEmailTar, localEmailsTar);
+            this.emitLog(taskId, domain, 95, `[EMAIL-SSH] ✅ emails.tar.gz extraído directamente desde el Hosting Web.`, 'success');
+            sshMailExtracted = true;
+          }
+        }
+
+        // Opción B: Si no se extrajo por SSH y hay API Token de Hostinger Email Pro, consultar API
+        if (!sshMailExtracted) {
+          const mailApiToken = this.configManager.getConfig()?.hostingerMail?.apiToken;
+          if (mailApiToken) {
+            this.emitLog(taskId, domain, 99, `[EMAIL] Verificando buzones en Hostinger Email API para ${domain}...`);
+            const { downloadEmailsForDomain } = require('../main/ipc/email.ipc');
+            const emailResult = await downloadEmailsForDomain(
+              domain,
+              finalDomainPath,
+              mailApiToken,
+              (msg, type) => this.emitLog(taskId, domain, 99, msg)
+            );
+            if (emailResult.success && !emailResult.skipped) {
+              this.emitLog(taskId, domain, 99, `[EMAIL] ✅ ${emailResult.totalMessages} correos guardados en emails.tar.gz`, 'success');
+            }
+          }
+        }
+      } catch (emailErr) {
+        // El error de email NO cancela el backup de WordPress
+        this.emitLog(taskId, domain, 99, `[EMAIL][WARN] No se pudieron descargar correos: ${emailErr.message}`, 'warning');
+      }
+
+      return {
+        success: true,
+        accountName,
+        cloudName,
+        domain,
+        tarPath: finalTarPath,
+        finalSize,
+        duration,
+        metrics: {
+          uploadsSizeMB: (uploadsSize / 1024 / 1024).toFixed(2),
+          sqlSizeMB: (sqlSize / 1024 / 1024).toFixed(2),
+          finalSizeMB: (finalSize / 1024 / 1024).toFixed(2),
+          durationSeconds: duration,
+          plugins: plugins.length,
+          theme,
+        },
+      };
+
+
+    } catch (error) {
+      this.progressEmitter.emitProgress({
+        taskId, module: 'extraction', domain, progress: 0,
+        message: `[ERROR] ${error.message}`,
+      });
+      throw error;
+    } finally {
+      // ── Limpieza remota ──
+      if (sshClient) {
+        try { sshClient.end(); } catch (_) {}
+      }
+      // ── Limpieza local temporal ──
+      if (localTempDomainPath) {
+        try {
+          if (fsSync.existsSync(localTempDomainPath)) {
+            fsSync.rmSync(localTempDomainPath, { recursive: true, force: true });
+          }
+        } catch (_) {}
+      }
+    }
+  }
+
   /**
    * Look up the WordPress installation path on the remote server.
    * Prioritizes domain-specific paths for multi-site hosting (Hostinger).
@@ -720,9 +1080,21 @@ class ExtractionService {
       const filesExist = filesTar || filesGz;
       const filesPath = filesGz ? filesGzPath : filesTarPath;
 
-      console.log(`[FORCE]   Resultado: archivos=${filesExist} sql=${dbExist}`);
+      let isUltraLite = false;
+      if (filesExist && !dbExist && filesGz) {
+        const tar = require('tar');
+        try {
+          await tar.t({ file: filesGzPath, onentry: (entry) => {
+            if (entry.path === 'config.json' || entry.path.endsWith('/config.json')) isUltraLite = true;
+          }});
+        } catch (_) {}
+      }
 
-      return { extracted: filesExist && dbExist, filesExist, dbExist, wpConfigExists, domainPath, filesPath };
+      console.log(`[FORCE]   Resultado: archivos=${filesExist} sql=${dbExist} ultraLite=${isUltraLite}`);
+
+      const extracted = (filesExist && dbExist) || isUltraLite;
+
+      return { extracted, filesExist, dbExist: dbExist || isUltraLite, isUltraLite, wpConfigExists, domainPath, filesPath };
     } catch (error) {
       console.log(`[FORCE]   ⚠️  Excepción: ${error.message}`);
       return { extracted: false, filesExist: false, dbExist: false, wpConfigExists: false, domainPath: null, filesPath: null };

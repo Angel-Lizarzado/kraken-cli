@@ -44,15 +44,7 @@ async function resolverInstanceId(ejecutarSSH, dominio) {
  * @param {Function} ejecutarSSH  - Función para ejecutar comandos SSH
  * @returns {Object}              - Payload JSON con diagnóstico completo
  */
-async function analizarYRecomendarAccion(stdoutDelLog, instanceId, dominio, ejecutarSSH) {
-
-  // ── PASO 1: Validar entradas ─────────────────────────────────────────────
-  if (!stdoutDelLog || typeof stdoutDelLog !== 'string') {
-    return construirPayloadError('El log recibido está vacío o no es válido.');
-  }
-  if (!instanceId) {
-    return construirPayloadError('No se pudo resolver el instanceId de Plesk para este dominio.');
-  }
+async function analizarYRecomendarAccion(stdoutDelLog, instanceId, dominio, ejecutarSSH, httpCode = null) {
 
   // ── Leer estado actual de memoria del dominio ───────────────────────────
   // Se hace siempre, no solo cuando detectamos un error de plugin.
@@ -66,17 +58,28 @@ async function analizarYRecomendarAccion(stdoutDelLog, instanceId, dominio, ejec
     (a, b) => a.prioridad - b.prioridad
   );
 
-  // ── PASO 3: Evaluar cada regla contra el log ─────────────────────────────
+  // ── PASO 3: Evaluar cada regla contra el log y httpCode ───────────────────
   let reglaDetectada = null;
   let contextoExtraido = {};
+  
+  // Incluimos un mensaje falso en el log si no hay instanceId para que lo pille la regex
+  const entrada = `${stdoutDelLog || ''}\n${!instanceId ? 'No se pudo resolver el instanceId de Plesk' : ''}`;
 
   for (const regla of reglasPorPrioridad) {
-    const coincidencia = stdoutDelLog.match(regla.regex);
+    if (regla.httpCodes && !regla.httpCodes.includes(httpCode)) continue;
+
+    const coincidencia = entrada.match(regla.regex);
 
     if (coincidencia) {
       reglaDetectada = regla;
       contextoExtraido = regla.extraerContexto(coincidencia);
-      break; // Se encontró la primera regla que aplica. Detener búsqueda.
+      break; 
+    }
+
+    if (regla.detectarPorCodigo && regla.httpCodes?.includes(httpCode)) {
+      reglaDetectada = regla;
+      contextoExtraido = regla.extraerContexto(['']);
+      break;
     }
   }
 
@@ -91,7 +94,7 @@ async function analizarYRecomendarAccion(stdoutDelLog, instanceId, dominio, ejec
       comandoMitigacion: null,
       riesgo: 'INDETERMINADO',
       requiereConfirmacion: true,
-      metadatos: { totalLineasAnalizadas: stdoutDelLog.split('\n').length, instanceId, memoriaMB },
+      metadatos: { totalLineasAnalizadas: (stdoutDelLog||'').split('\n').length, instanceId, memoriaMB },
     };
   }
 

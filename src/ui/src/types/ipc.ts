@@ -3,8 +3,8 @@ import type { ServerDiagnostics } from './server';
 // ── IPC API ──
 export interface IpcApi {
   send: (channel: string, data?: unknown) => void;
-  receive: (channel: string, func: (...args: unknown[]) => void) => void;
-  removeListener: (channel: string, func: (...args: unknown[]) => void) => void;
+  receive: (channel: string, func: (...args: any[]) => void) => () => void;
+  removeListener: (channel: string, func: (...args: any[]) => void) => void;
   removeAllListeners: (channel: string) => void;
   invoke: (channel: string, data?: unknown) => Promise<unknown>;
 }
@@ -51,6 +51,10 @@ export interface CloudflareConfig {
 }
 
 export interface ConfigData {
+  googleDrive?: {
+    credentialsPath?: string;
+    rootFolderId?: string;
+  };
   sshKeys: SshKeyConfig;
   accounts: AccountConfig[];
   destinationServers: DestinationServerConfig[];

@@ -264,7 +264,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               maxWidth: '900px',
               maxHeight: '85vh',
               backgroundColor: 'var(--surface-raised)',
-              border: '1px solid var(--border-default)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
               borderRadius: '12px',
               boxShadow: '0 24px 48px oklch(0 0 0 / 0.4)',
             }}
@@ -273,13 +273,13 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             {/* Header */}
             <div
               className="flex items-center justify-between px-5 py-4 border-b"
-              style={{ borderColor: 'var(--border-default)' }}
+              style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}
             >
               <div className="flex items-center gap-2.5">
-                <Globe size={18} style={{ color: 'var(--color-accent)' }} />
+                <Globe size={18} style={{ color: '#34ace0' }} />
                 <div>
                   <h2 className="font-display font-bold text-base">Monitor de Salud</h2>
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  <p className="text-xs" style={{ color: '#a5a5a5' }}>
                     {serverName} · {phase === 'scanning'
                       ? `Escaneando ${progress.current}/${progress.total}...`
                       : phase === 'done'
@@ -295,7 +295,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                     className="btn text-xs"
                     style={{
                       backgroundColor: 'oklch(0.45 0.12 25 / 0.2)',
-                      color: 'var(--color-error)',
+                      color: '#ff5252',
                       border: '1px solid oklch(0.45 0.12 25 / 0.25)',
                     }}
                   >
@@ -315,12 +315,12 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
 
             {/* Progress bar (scanning) */}
             {phase === 'scanning' && (
-              <div className="px-5 py-3" style={{ borderBottom: '1px solid var(--border-default)' }}>
+              <div className="px-5 py-3" style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}>
                 <div className="flex items-center justify-between text-xs mb-1.5">
-                  <span style={{ color: 'var(--text-secondary)' }}>
+                  <span style={{ color: '#d1d1d1' }}>
                     Procesando {progress.current} de {progress.total} dominios
                   </span>
-                  <span className="font-mono" style={{ color: 'var(--text-muted)' }}>
+                  <span className="font-mono" style={{ color: '#a5a5a5' }}>
                     {pct}% · {elapsedTime}s
                   </span>
                 </div>
@@ -328,7 +328,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   style={{
                     height: '4px',
                     borderRadius: '2px',
-                    backgroundColor: 'var(--surface-overlay)',
+                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
                     overflow: 'hidden',
                   }}
                 >
@@ -337,7 +337,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                       width: `${pct}%`,
                       height: '100%',
                       borderRadius: '2px',
-                      backgroundColor: 'var(--color-accent)',
+                      backgroundColor: '#34ace0',
                       transition: 'width 0.3s ease',
                     }}
                   />
@@ -349,26 +349,26 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             {results.length > 0 && (
               <div
                 className="px-5 py-3 flex gap-3 flex-wrap"
-                style={{ borderBottom: '1px solid var(--border-default)' }}
+                style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.1)' }}
               >
                 <CounterPill
                   label="OK"
                   count={counts.ok + counts.redirect}
-                  color="var(--color-success)"
+                  color="#33d9b2"
                   active={filter === 'ok'}
                   onClick={() => setFilter(f => f === 'ok' ? 'all' : 'ok')}
                 />
                 <CounterPill
                   label="Advertencia"
                   count={counts.warning}
-                  color="var(--color-warning)"
+                  color="#ffb142"
                   active={filter === 'warning'}
                   onClick={() => setFilter(f => f === 'warning' ? 'all' : 'warning')}
                 />
                 <CounterPill
                   label="Error"
                   count={counts.error}
-                  color="var(--color-error)"
+                  color="#ff5252"
                   active={filter === 'error'}
                   onClick={() => setFilter(f => f === 'error' ? 'all' : 'error')}
                 />
@@ -385,18 +385,18 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                   <div
                     className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs"
                     style={{
-                      backgroundColor: 'var(--surface-overlay)',
-                      border: '1px solid var(--border-default)',
+                      backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                      border: '1px solid rgba(255, 255, 255, 0.1)',
                     }}
                   >
-                    <Search size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <Search size={12} style={{ color: '#a5a5a5', flexShrink: 0 }} />
                     <input
                       type="text"
                       placeholder="Buscar dominio..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
                       className="bg-transparent outline-none flex-1 text-xs"
-                      style={{ color: 'var(--text-primary)', border: 'none' }}
+                      style={{ color: '#ffffff', border: 'none' }}
                     />
                   </div>
                 </div>
@@ -413,7 +413,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                 }}
               >
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: 'var(--color-error)' }}>
+                  <div className="flex items-center gap-1.5 text-xs font-medium" style={{ color: '#ff5252' }}>
                     <AlertTriangle size={13} />
                     {criticalDomains.length} dominio{criticalDomains.length !== 1 ? 's' : ''} con problemas
                   </div>
@@ -423,7 +423,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                       disabled={batchRepairing}
                       className="flex items-center gap-1 text-xs btn"
                       style={{
-                        color: 'var(--color-warning)',
+                        color: '#ffb142',
                         backgroundColor: 'oklch(0.55 0.15 75 / 0.15)',
                         border: '1px solid oklch(0.55 0.15 75 / 0.3)',
                         padding: '3px 8px',
@@ -437,7 +437,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                     <button
                       onClick={copyFailed}
                       className="flex items-center gap-1 text-xs btn btn--ghost"
-                      style={{ color: copied ? 'var(--color-success)' : 'var(--text-muted)', padding: '3px 8px' }}
+                      style={{ color: copied ? '#33d9b2' : '#a5a5a5', padding: '3px 8px' }}
                     >
                       {copied ? <Check size={12} /> : <Copy size={12} />}
                       {copied ? 'Copiado' : 'Copiar lista'}
@@ -455,14 +455,14 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
                           : 'oklch(0.45 0.12 25 / 0.15)',
                         color: r.status === 'dns'
                           ? 'oklch(0.75 0.15 290)'
-                          : 'var(--color-error)',
+                          : '#ff5252',
                       }}
                     >
                       {r.domain}
                     </span>
                   ))}
                   {criticalDomains.length > 12 && (
-                    <span className="text-[10px] py-0.5" style={{ color: 'var(--text-muted)' }}>
+                    <span className="text-[10px] py-0.5" style={{ color: '#a5a5a5' }}>
                       +{criticalDomains.length - 12} más
                     </span>
                   )}
@@ -473,8 +473,8 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             {/* Error message */}
             {error && results.length === 0 && (
               <div className="px-5 py-8 text-center">
-                <AlertTriangle size={32} className="mx-auto mb-3" style={{ color: 'var(--color-error)' }} />
-                <p className="text-sm" style={{ color: 'var(--color-error)' }}>{error}</p>
+                <AlertTriangle size={32} className="mx-auto mb-3" style={{ color: '#ff5252' }} />
+                <p className="text-sm" style={{ color: '#ff5252' }}>{error}</p>
               </div>
             )}
 
@@ -482,7 +482,7 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
             <div className="flex-1 overflow-y-auto px-5 py-3">
               {filtered.length === 0 && results.length > 0 && (
                 <div className="text-center py-8">
-                  <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  <p className="text-xs" style={{ color: '#a5a5a5' }}>
                     No hay resultados para este filtro.
                   </p>
                 </div>
@@ -505,8 +505,8 @@ const HealthCheckModal: React.FC<HealthCheckModalProps> = ({
               <div
                 className="px-5 py-2.5 text-xs border-t flex items-center justify-between"
                 style={{
-                  borderColor: 'var(--border-default)',
-                  color: 'var(--text-muted)',
+                  borderColor: 'rgba(255, 255, 255, 0.1)',
+                  color: '#a5a5a5',
                   backgroundColor: 'var(--surface-base)',
                   borderRadius: '0 0 12px 12px',
                 }}
@@ -544,9 +544,9 @@ const CounterPill = React.memo(function CounterPill({ label, count, color, activ
       onClick={onClick}
       className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs transition-all duration-100"
       style={{
-        backgroundColor: active ? `${color}20` : 'var(--surface-overlay)',
-        border: `1px solid ${active ? color : 'var(--border-default)'}`,
-        color: active ? color : 'var(--text-secondary)',
+        backgroundColor: active ? `${color}20` : 'rgba(255, 255, 255, 0.05)',
+        border: `1px solid ${active ? color : 'rgba(255, 255, 255, 0.1)'}`,
+        color: active ? color : '#d1d1d1',
         cursor: 'pointer',
       }}
     >
@@ -573,18 +573,18 @@ interface ResultRowProps {
 }
 
 const SPEED_CONFIG = {
-  optimal: { label: '<1s',  color: 'var(--color-success)' },
-  slow:    { label: '1-5s', color: 'var(--color-warning)' },
+  optimal: { label: '<1s',  color: '#33d9b2' },
+  slow:    { label: '1-5s', color: '#ffb142' },
   critical:{ label: '>5s',  color: 'oklch(0.65 0.18 25)' },
-  timeout: { label: 'T/O',  color: 'var(--text-muted)'   },
+  timeout: { label: 'T/O',  color: '#a5a5a5'   },
 } as const;
 
 const ResultRow = React.memo(function ResultRow({ result, isHealing, isHealed, onHeal }: ResultRowProps) {
   const statusConfig = {
-    ok:       { icon: Wifi,          color: 'var(--color-success)', bg: 'oklch(0.55 0.15 145 / 0.1)' },
+    ok:       { icon: Wifi,          color: '#33d9b2', bg: 'oklch(0.55 0.15 145 / 0.1)' },
     redirect: { icon: Wifi,          color: 'var(--color-info)',    bg: 'oklch(0.55 0.15 230 / 0.1)' },
-    warning:  { icon: AlertTriangle, color: 'var(--color-warning)', bg: 'oklch(0.55 0.15 75 / 0.1)'  },
-    error:    { icon: WifiOff,       color: 'var(--color-error)',   bg: 'oklch(0.45 0.12 25 / 0.1)'  },
+    warning:  { icon: AlertTriangle, color: '#ffb142', bg: 'oklch(0.55 0.15 75 / 0.1)'  },
+    error:    { icon: WifiOff,       color: '#ff5252',   bg: 'oklch(0.45 0.12 25 / 0.1)'  },
     dns:      { icon: Globe,         color: 'oklch(0.75 0.15 290)', bg: 'oklch(0.65 0.18 290 / 0.1)' },
   } as const;
 
@@ -598,8 +598,8 @@ const ResultRow = React.memo(function ResultRow({ result, isHealing, isHealed, o
       className="flex items-center gap-2.5 px-3 py-2 rounded-md text-xs"
       style={{ backgroundColor: isHealed ? 'oklch(0.55 0.15 145 / 0.08)' : cfg.bg }}
     >
-      <Icon size={13} style={{ color: isHealed ? 'var(--color-success)' : cfg.color, flexShrink: 0 }} />
-      <span className="font-mono flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+      <Icon size={13} style={{ color: isHealed ? '#33d9b2' : cfg.color, flexShrink: 0 }} />
+      <span className="font-mono flex-1 truncate" style={{ color: '#ffffff' }}>
         {result.domain}
       </span>
 
@@ -624,7 +624,7 @@ const ResultRow = React.memo(function ResultRow({ result, isHealing, isHealed, o
       )}
 
       {/* Tiempo */}
-      <span className="font-mono" style={{ color: 'var(--text-muted)', minWidth: '52px', textAlign: 'right' }}>
+      <span className="font-mono" style={{ color: '#a5a5a5', minWidth: '52px', textAlign: 'right' }}>
         {result.time}ms
       </span>
 
@@ -636,7 +636,7 @@ const ResultRow = React.memo(function ResultRow({ result, isHealing, isHealed, o
           title={isHealed ? 'Reparado' : 'Auto-Repair: plesk repair fs + web'}
           className="flex items-center gap-1 text-[10px] btn"
           style={{
-            color: isHealed ? 'var(--color-success)' : 'var(--color-warning)',
+            color: isHealed ? '#33d9b2' : '#ffb142',
             backgroundColor: isHealed ? 'oklch(0.55 0.15 145 / 0.15)' : 'oklch(0.55 0.15 75 / 0.15)',
             border: `1px solid ${isHealed ? 'oklch(0.55 0.15 145 / 0.3)' : 'oklch(0.55 0.15 75 / 0.3)'}`,
             padding: '2px 6px',

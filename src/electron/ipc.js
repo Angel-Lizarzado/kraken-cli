@@ -45,6 +45,8 @@ const { registerFleetHandlers }    = require('../main/ipc/fleet.ipc');
 const { registerCmsHandlers }      = require('../main/ipc/cms.ipc');
 const { registerProvisioningHandlers } = require('../main/ipc/provisioning.ipc');
 const { registerSyncDnsHandlers } = require('../main/ipc/syncdns.ipc');
+const { registerRescueSorterHandlers } = require('../main/ipc/rescuesorter.ipc');
+const { registerEmailHandlers } = require('../main/ipc/email.ipc');
 
 // ── Initialize IPC Handlers ──
 
@@ -92,6 +94,8 @@ function initializeIpcHandlers(ipcMain, mainWindow) {
   registerCmsHandlers(ipcMain, mainWindow);
   registerProvisioningHandlers(ipcMain, mainWindow, scope);
   registerSyncDnsHandlers(ipcMain, mainWindow, scope);
+  registerRescueSorterHandlers(ipcMain, mainWindow);
+  registerEmailHandlers(ipcMain, mainWindow);
 }
 
 // ── Cleanup ──

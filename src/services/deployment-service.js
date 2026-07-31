@@ -218,9 +218,18 @@ class DeploymentService {
         const taskId = this.progressEmitter.createTask('deployment', domainName, `Iniciando despliegue de ${domainName}`);
         const baseProgress = Math.round((i / dominios.length) * 90);
 
-        // TAREA 4: Reconectar si la conexión global se cayó
+        // TAREA 4: Técnica del Submarino (Rotación periódica para evadir firewall)
+        // Desconectamos y reconectamos intencionalmente cada 2 dominios
+        if (i > 0 && i % 2 === 0) {
+          if (emitLog) emitLog(`[BATCH] Rotando conexión SSH (Técnica Submarino) para evitar timeout corporativo...`, 'info');
+          try { if (sshClient) sshClient.end(); } catch (_) { }
+          await new Promise(resolve => setTimeout(resolve, 3000)); // Pequeña pausa para limpiar socket
+          sshClient = null;
+        }
+
+        // TAREA 4b: Reconectar si la conexión global se cayó o la cerramos a propósito
         if (!sshClient || !sshClient._sock || sshClient._sock.destroyed) {
-          if (emitLog) emitLog(`[BATCH] Conexión SSH perdida, reconectando...`, 'warning');
+          if (emitLog) emitLog(sshClient ? `[BATCH] Conexión SSH perdida, reconectando...` : `[BATCH] Estableciendo nueva sesión SSH...`, 'warning');
           try { if (sshClient) sshClient.end(); } catch (_) { }
           sshClient = await this.sshService.connect(serverConfig.sshCredentials, `deployment-batch-${batchTaskId}`);
           if (emitLog) emitLog(`[BATCH] Reconexión SSH exitosa`, 'info');
@@ -243,12 +252,12 @@ class DeploymentService {
         let dnsStatus = null;
 
         try {
-          if (emitLog) emitLog(`[BATCH] Iniciando dominio: ${domainName}`, 'info', domainName);
+          // Emitimos solo un header ligero en tiempo real para feedback de que empezó
+          if (emitLog) emitLog(`[BATCH] Procesando: ${domainName}...`, 'info', domainName);
           const result = await this.deploySingleDomain(
             accountName, serverName, domainName, sourceAccount, sourceCloud,
             taskId, { sshClient }, emitLog, forceClean
           );
-          if (emitLog) emitLog(`[BATCH] Finalizó dominio: ${domainName} — ${result.status}`, 'info', domainName);
 
           // 🔥 v1.9.2: DNS no propagado no es advertencia — es esperable. Solo miramos si el deploy fue exitoso.
           const deployOk = result.status === 'success' || result.step === 'complete';
@@ -265,17 +274,19 @@ class DeploymentService {
               onDomainEvent(domainName, 'migrate-domain-success', { message: msgToEmit });
               await new Promise(resolve => setTimeout(resolve, 50));
             }
-          } else if (finalStatus === 'warning') {
-            if (emitLog) emitLog(`[WARN] ${domainName}: ${errDetail || 'Faltan archivos'}`, 'warning', domainName);
-            if (onDomainEvent) {
-              onDomainEvent(domainName, 'migrate-domain-warning', { message: errDetail || 'Faltan archivos' });
-              await new Promise(resolve => setTimeout(resolve, 50));
-            }
           } else {
-            if (emitLog) emitLog(`[ERROR] ${domainName}: ${errDetail || 'Error durante el despliegue'}`, 'error', domainName);
-            if (onDomainEvent) {
-              onDomainEvent(domainName, 'migrate-domain-error', { message: errDetail || 'Error durante el despliegue' });
-              await new Promise(resolve => setTimeout(resolve, 50));
+            if (finalStatus === 'warning') {
+              if (emitLog) emitLog(`[WARN] ${domainName}: ${errDetail || 'Faltan archivos'}`, 'warning', domainName);
+              if (onDomainEvent) {
+                onDomainEvent(domainName, 'migrate-domain-warning', { message: errDetail || 'Faltan archivos' });
+                await new Promise(resolve => setTimeout(resolve, 50));
+              }
+            } else if (finalStatus === 'error') {
+              if (emitLog) emitLog(`[ERROR] ${domainName}: ${errDetail || 'Error durante el despliegue'}`, 'error', domainName);
+              if (onDomainEvent) {
+                onDomainEvent(domainName, 'migrate-domain-error', { message: errDetail || 'Error durante el despliegue' });
+                await new Promise(resolve => setTimeout(resolve, 50));
+              }
             }
           }
 
@@ -291,7 +302,9 @@ class DeploymentService {
           this.progressEmitter.completeTask(taskId, `Finalizó dominio: ${domainName} — ${result.status}`);
         } catch (error) {
           console.error(`[BATCH] Deploy failed for ${domainName}:`, error.message);
-          if (emitLog) emitLog(`[ERROR] ${domainName}: ${error.message}`, 'error', domainName);
+          if (emitLog) {
+            emitLog(`[ERROR] ${domainName}: ${error.message}`, 'error', domainName);
+          }
           if (onDomainEvent) {
             onDomainEvent(domainName, 'migrate-domain-error', { message: error.message });
             await new Promise(resolve => setTimeout(resolve, 50));
@@ -437,11 +450,24 @@ class DeploymentService {
           errorDetails: `Faltan archivos (no se encontró .tar.gz ni .tar)`
         };
       }
+      
+      let isUltraLite = false;
       if (!fs.existsSync(dbPath)) {
-        return {
-          domain, safeDomain: safeDom, status: 'warning', step: 'missing-files',
-          errorDetails: `Faltan archivos (no se encontró .sql)`
-        };
+        if (isGz) {
+          const tar = require('tar');
+          try {
+            await tar.t({ file: filesPath, onentry: (entry) => {
+              if (entry.path === 'config.json' || entry.path.endsWith('/config.json')) isUltraLite = true;
+            }});
+          } catch (_) {}
+        }
+        
+        if (!isUltraLite) {
+          return {
+            domain, safeDomain: safeDom, status: 'warning', step: 'missing-files',
+            errorDetails: `Faltan archivos (no se encontró .sql ni formato Ultra-Lite)`
+          };
+        }
       }
 
       // ================================================================
@@ -498,7 +524,7 @@ class DeploymentService {
           `fi`,
           `echo "[OK] Dominio listo para deploy"`,
         ].join('\n');
-        const skipResult = await this.sshService.executeCommand(sshClient, skipCheckCmd, { timeoutMs: 60000 });
+        const skipResult = await this.sshService.executeCommand(sshClient, skipCheckCmd, { timeoutMs: 1800000 });
 
           const skipOutput = (skipResult.stdout || '').trim();
           if (skipOutput.includes('[SKIP]')) {
@@ -522,7 +548,7 @@ class DeploymentService {
         `PLESK_IP=$(plesk db -Ne "SELECT ip_address FROM IP_Addresses WHERE type='shared' LIMIT 1;" 2>/dev/null); ` +
         `[ -z "$PLESK_IP" ] && PLESK_IP=$(plesk db -Ne "SELECT ip_address FROM IP_Addresses LIMIT 1;" 2>/dev/null); ` +
         `echo "$PLESK_IP"`,
-        { timeoutMs: 60000 }
+        { timeoutMs: 1800000 }
       );
       const pleskIp = (ipQuery.stdout || '').trim();
       if (!pleskIp) {
@@ -534,7 +560,7 @@ class DeploymentService {
       let subscriptionExists = false;
       if (forceClean) {
         try {
-          const checkResult = await this.sshService.executeCommand(sshClient, `plesk bin subscription --info "${safeDom}" 2>/dev/null && echo "EXISTS" || echo "NOT_FOUND"`, { timeoutMs: 60000 });
+          const checkResult = await this.sshService.executeCommand(sshClient, `plesk bin subscription --info "${safeDom}" 2>/dev/null && echo "EXISTS" || echo "NOT_FOUND"`, { timeoutMs: 1800000 });
           subscriptionExists = (checkResult.stdout || '').includes('EXISTS');
         } catch { /* asumir que no existe */ }
       }
@@ -554,11 +580,13 @@ class DeploymentService {
         this.emitLog(taskId, domain, 10, `[INFO] Contraseña de la suscripción generada: ${subscriptionPassword}`);
         if (emitLog) emitLog(`[INFO] Contraseña de suscripción para ${safeDom}: ${subscriptionPassword}`, 'info');
 
-        const baseLogin = safeDom.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
+        let alphaDom = safeDom.replace(/^[^a-zA-Z]+/, ''); // Eliminar números al inicio
+        if (!alphaDom) alphaDom = 'usr'; // Fallback si el dominio es puro número
+        const baseLogin = alphaDom.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10);
         let currentLogin = baseLogin + crypto.randomBytes(2).toString('hex');
         let subCmd = `plesk bin subscription -c "${safeDom}" -owner KitDigital -service-plan "Default Domain" -ip "${pleskIp}" -login "${currentLogin}" -passwd "${subscriptionPassword}"`;
         try {
-          let subResult = await this.sshService.executeCommand(sshClient, subCmd, { timeoutMs: 300000 });
+          let subResult = await this.sshService.executeCommand(sshClient, subCmd, { timeoutMs: 1800000 });
           const EMIT = require('./standard-emitter').getStandardEmitter('deployment');
           EMIT.emit('debug', `[PLESK SUB] ${safeDom} code=${subResult.code} stderr=${(subResult.stderr || '').slice(0, 120)}`);
           
@@ -566,7 +594,7 @@ class DeploymentService {
             EMIT.emit('debug', `[PLESK SUB] Colision de usuario en Plesk. Reintentando con login alternativo...`);
             currentLogin = baseLogin + crypto.randomBytes(3).toString('hex');
             subCmd = `plesk bin subscription -c "${safeDom}" -owner KitDigital -service-plan "Default Domain" -ip "${pleskIp}" -login "${currentLogin}" -passwd "${subscriptionPassword}"`;
-            subResult = await this.sshService.executeCommand(sshClient, subCmd, { timeoutMs: 300000 });
+            subResult = await this.sshService.executeCommand(sshClient, subCmd, { timeoutMs: 1800000 });
             EMIT.emit('debug', `[PLESK SUB RETRY] ${safeDom} code=${subResult.code} stderr=${(subResult.stderr || '').slice(0, 120)}`);
           }
 
@@ -632,6 +660,13 @@ class DeploymentService {
       // STEP 3: DETERMINAR DOCUMENT ROOT (Plesk ya creó httpdocs con la suscripción)
       // ================================================================
       const documentRoot = await this.getPleskDocumentRoot(sshClient, safeDom);
+
+      // ================================================================
+      // BRANCH: ULTRA-LITE MODO
+      // ================================================================
+      if (isUltraLite) {
+        return await this.deployUltraLiteDomain(sshClient, domain, filesPath, taskId);
+      }
 
       // ================================================================
       // STEP 4: TRANSFERENCIA SFTP (streaming eficiente)
@@ -819,9 +854,7 @@ class DeploymentService {
         '# ================================================================',
         '# 2. CONFIGURACIÓN DE SERVIDOR (PLESK CLI)',
         '# ================================================================',
-        `echo "memory_limit = 512M" > /tmp/mem_limit.ini || true`,
-        `plesk bin site --update-php-settings "${safeDom}" -settings /tmp/mem_limit.ini > /dev/null 2>&1 || true`,
-        `rm -f /tmp/mem_limit.ini || true`,
+        `plesk bin php_settings -u "${safeDom}" -settings memory_limit=512M > /dev/null 2>&1 || true`,
         'echo "---[2/12] Memoria configurada (512M)---"',
 
         PROGRESS('upload', 'Subiendo backups al servidor...'),
@@ -906,8 +939,9 @@ class DeploymentService {
         `fi`,
         // Paso 3: Crear usuario o asociar y actualizar contraseña si ya existe
         `echo "@@@syslog|MIGRATE|info|DB-USER \$DB_USER"`,
-        `plesk bin database --create-dbuser "\$DB_USER" -passwd "\$DB_PASS" -domain "${safeDom}" -server localhost:3306 -database "\$DB_NAME" > /dev/null 2>&1 || \\`,
-        `  (plesk bin database --update "\$DB_NAME" -add_user "\$DB_USER" -passwd "\$DB_PASS" > /dev/null 2>&1 && plesk bin database --update-dbuser "\$DB_USER" -passwd "\$DB_PASS" -server localhost:3306 > /dev/null 2>&1)`,
+        `plesk bin database --create-dbuser "\$DB_USER" -passwd "\$DB_PASS" -domain "${safeDom}" -server localhost:3306 -database "\$DB_NAME" > /dev/null 2>&1 || true`,
+        `plesk bin database --update "\$DB_NAME" -add_user "\$DB_USER" > /dev/null 2>&1 || true`,
+        `plesk bin database --update-dbuser "\$DB_USER" -passwd "\$DB_PASS" -server localhost:3306 > /dev/null 2>&1 || true`,
         // Paso 4: Reescribir wp-config.php con las nuevas credenciales Plesk
         `echo "@@@syslog|MIGRATE|info|WP-CONFIG-REWRITE $DB_USER@$DB_NAME"`,
         `sed -i "s/define( *'DB_NAME'.*/define( 'DB_NAME', '$DB_NAME' );/" wp-config.php || true`,
@@ -931,7 +965,7 @@ class DeploymentService {
         `# Segundo: Contar tablas ANTES de borrar`,
         `EXISTING_COUNT=\$(mysql -u"\$DB_USER" -p"\$DB_PASS" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '\$DB_NAME' AND table_type = 'BASE TABLE';" 2>/dev/null || echo 0)`,
         '',
-        `if [ "\$EXISTING_COUNT" -lt 50 ]; then`,
+        `if [ "\$EXISTING_COUNT" -lt 11 ]; then`,
         `  echo "---[8/12] Detectadas \$EXISTING_COUNT tablas. Procediendo a limpiar y refrescar BD...---"`,
         `  echo "@@@syslog|MIGRATE|debug|DB-SOFT-RESET"`,
         `  # Solo ahora hacemos el DROP, porque sabemos que el archivo existe`,
@@ -946,7 +980,7 @@ class DeploymentService {
         `  # ================================================================`,
         `  echo "[IMPORTANDO] Inyectando base de datos (Sanitización en archivo separado)..."`,
         `  echo "SET FOREIGN_KEY_CHECKS=0;" > sanitized.sql`,
-        `  sed -E -e 's#\\/\\*!50013 DEFINER=[^*]*\\*\\/##g' -e 's#\\/\\*!50017 DEFINER=[^*]*\\*\\/##g' -e 's/DEFINER=[a-zA-Z0-9_@.\`"]+//g' -e '/\\/\\*!50003 TRIGGER/d' -e '/SET @OLD_/d' -e '/SQL_MODE/d' "\$SQL_FILE" >> sanitized.sql || true`,
+        `  sed -E -e 's#\\/\\*!50013 DEFINER=[^*]*\\*\\/##g' -e 's#\\/\\*!50017 DEFINER=[^*]*\\*\\/##g' -e 's/DEFINER=[a-zA-Z0-9_@.\`"]+//g' -e '/\\/\\*!50003 TRIGGER/d' -e '/SET @OLD_/d' -e '/SQL_MODE/d' -e 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' -e 's/utf8mb4_unicode_520_ci/utf8mb4_unicode_ci/g' -e '/^CREATE DATABASE/d' -e '/^USE /d' "\$SQL_FILE" >> sanitized.sql || true`,
         `  echo "SET FOREIGN_KEY_CHECKS=1;" >> sanitized.sql`,
         `  IMPORT_EXIT=0; mysql -u"\$DB_USER" -p"\$DB_PASS" --force "\$DB_NAME" < sanitized.sql > "${short}_mysql_debug.log" 2>&1 || IMPORT_EXIT=\$?`,
         `  if [ \$IMPORT_EXIT -ne 0 ]; then`,
@@ -954,7 +988,9 @@ class DeploymentService {
         `    echo "@@@syslog|MIGRATE|warning|SQL-IMPORT-FAIL-RETRIEVAL"`,
         `    plesk bin database --remove "\$DB_NAME" >/dev/null 2>&1 || true`,
         `    plesk bin database --create "\$DB_NAME" -domain "${safeDom}" -type mysql -server localhost > /dev/null 2>&1 || true`,
-        `    plesk bin database --create-dbuser "\$DB_USER" -passwd "\$DB_PASS" -domain "${safeDom}" -server localhost:3306 -database "\$DB_NAME" > /dev/null 2>&1 || (plesk bin database --update "\$DB_NAME" -add_user "\$DB_USER" -passwd "\$DB_PASS" > /dev/null 2>&1 && plesk bin database --update-dbuser "\$DB_USER" -passwd "\$DB_PASS" -server localhost:3306 > /dev/null 2>&1) || true`,
+        `    plesk bin database --create-dbuser "\\$DB_USER" -passwd "\\$DB_PASS" -domain "${safeDom}" -server localhost:3306 -database "\\$DB_NAME" > /dev/null 2>&1 || true`,
+        `    plesk bin database --update "\\$DB_NAME" -add_user "\\$DB_USER" > /dev/null 2>&1 || true`,
+        `    plesk bin database --update-dbuser "\\$DB_USER" -passwd "\\$DB_PASS" -server localhost:3306 > /dev/null 2>&1 || true`,
         `    echo "[RE-IMPORTANDO] Re-intentando importación limpia desde sanitized.sql..."`,
         `    REIMPORT_EXIT=0; mysql -u"\$DB_USER" -p"\$DB_PASS" --force "\$DB_NAME" < sanitized.sql >> "${short}_mysql_debug.log" 2>&1 || REIMPORT_EXIT=\$?`,
         `    if [ \$REIMPORT_EXIT -eq 0 ]; then`,
@@ -1008,8 +1044,8 @@ class DeploymentService {
         `    echo "[VERIFICACIÓN] Validando integridad de tablas importadas..."`,
         `    TABLE_COUNT=$(mysql -u"$DB_USER" -p"$DB_PASS" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$DB_NAME' AND table_type = 'BASE TABLE';" 2>/dev/null || echo 0)`,
         `    echo "  [INFO] Tablas encontradas en producción: $TABLE_COUNT"`,
-        `    if [ "$TABLE_COUNT" -lt 50 ]; then`,
-        `      echo "---[ERROR FATAL] La base de datos solo importó $TABLE_COUNT tablas (se requiere un mínimo de 50). Deploy abortado.---"`,
+        `    if [ "$TABLE_COUNT" -lt 11 ]; then`,
+        `      echo "---[ERROR FATAL] La base de datos solo importó $TABLE_COUNT tablas (se requiere un mínimo de 11). Deploy abortado.---"`,
         `      exit 1`,
         `    fi`,
         `    echo "@@@syslog|MIGRATE|info|TABLE-COUNT-OK $TABLE_COUNT"`,
@@ -1095,6 +1131,13 @@ class DeploymentService {
         `  fi`,
         `fi`,
         `chmod 600 "/var/www/vhosts/${safeDom}/httpdocs/wp-config.php" 2>/dev/null || true`,
+        `(`,
+        `  cd "/var/www/vhosts/${safeDom}"`,
+        `  $WP_CMD option delete upload_path --path=httpdocs --allow-root 2>/dev/null || true`,
+        `  $WP_CMD option set upload_path "" --path=httpdocs --allow-root 2>/dev/null || true`,
+        `  $WP_CMD rewrite flush --hard --path=httpdocs --allow-root 2>/dev/null || true`,
+        `  $WP_CMD elementor flush_css --path=httpdocs --allow-root 2>/dev/null || true`,
+        `)`,
 
         '# ================================================================',
         '# 8. REGISTRO WP TOOLKIT Y CIERRE',
@@ -1199,12 +1242,13 @@ class DeploymentService {
       // oldSiteurl se necesita para sanitización post-migración vieja si existe
       const oldSiteurl = this.extractOldSiteurlFromSql(dbPath);
 
-      // --- [NUEVO] Aprovisionamiento Automático de Correo ---
+      // --- [NUEVO] Aprovisionamiento y Restauración de Correos ---
       try {
-        const { asegurarBuzonInfo } = require('./mail-service');
+        const { asegurarBuzonInfo, restaurarEmailsPlesk } = require('./mail-service');
         const executeFn = async (cmd) => await this.sshService.executeCommand(sshClient, cmd);
+        const sftpUploadFn = async (localFile, remoteFile) => await this.sshService.uploadFile(sshClient, localFile, remoteFile);
+
         const mailRes = await asegurarBuzonInfo(domain, executeFn);
-        
         if (mailRes.exito) {
           this.emitLog(taskId, domain, 98, `[CORREO] ${mailRes.mensaje}`);
           this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 98, message: `[CORREO] ${mailRes.mensaje}` });
@@ -1212,8 +1256,17 @@ class DeploymentService {
           this.emitLog(taskId, domain, 98, `[CORREO-WARN] ${mailRes.mensaje}`);
           this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 98, message: `[CORREO-WARN] ${mailRes.mensaje}` });
         }
+
+        // Restaurar emails.tar.gz si existe
+        await restaurarEmailsPlesk({
+          domain,
+          domainPath,
+          executeCommandFn: executeFn,
+          sftpUploadFn,
+          emitLog: (msg, type) => this.emitLog(taskId, domain, 99, msg)
+        });
       } catch (err) {
-        console.warn(`[DEPLOY] Error fatal en aprovisionamiento de correo para ${domain}:`, err.message);
+        console.warn(`[DEPLOY] Error en restauración de correo para ${domain}:`, err.message);
       }
 
       const endTime = Date.now();
@@ -1257,6 +1310,259 @@ class DeploymentService {
   deployWordPress(accountName, serverName, domain, sourceAccount, sourceCloud, taskId, options = {}) {
     return this.deploySingleDomain(accountName, serverName, domain, sourceAccount, sourceCloud, taskId, options, null);
   }
+
+  // ================================================================
+  // MÉTODO: deployUltraLiteDomain
+  // Despliegue del nuevo formato Ultra-Lite:
+  //   - Sube {dominio}.tar.gz (contiene uploads/ + config.json + SQLs)
+  //   - Instala WP Core limpio
+  //   - Importa {dominio}.sql saneado
+  //   - Aplica limpieza profunda de DB (triggers + spam)
+  //   - Instala plugins gratuitos vía WP-CLI
+  //   - Inyecta Elementor Pro (zip + licencia desde Config global)
+  //   - Reverse SSH: descarga SQL desinfectado y lo reemplaza en el tar local
+  // ================================================================
+
+  /**
+   * @param {Object} sshClient - Conexión SSH existente
+   * @param {string} domain - Dominio original (puede tener IDN)
+   * @param {string} localTarPath - Ruta local al {dominio}.tar.gz Ultra-Lite
+   * @param {string} taskId - ID de tarea para progress emitter
+   */
+  async deployUltraLiteDomain(sshClient, domain, localTarPath, taskId) {
+    const safeDom = this.safeDomain(domain);
+    const short = this.shortName(safeDom);
+    const HDP = `/var/www/vhosts/${safeDom}/httpdocs`;
+    const startTime = Date.now();
+
+    const EMIT = require('./standard-emitter').getStandardEmitter('deployment');
+    const log = (msg) => {
+      EMIT.emit('info', msg, domain);
+      this.emitLog(taskId, domain, 50, msg);
+    };
+
+    // 1. Leer config de Elementor Pro del ConfigManager
+    const cfg = this.configManager.getConfig();
+    const epZipPath = cfg?.elementorPro?.zipPath || null;
+    const epLicenseKey = cfg?.elementorPro?.licenseKey || null;
+
+    log(`[ULTRA-LITE] Iniciando despliegue para ${domain}`);
+
+    // 2. Subir el tar.gz Ultra-Lite vía SSH
+    const remoteArchive = `${HDP}/${short}_ulite.tar.gz`;
+    log(`[SFTP] Subiendo ${path.basename(localTarPath)}...`);
+    await this.sshService.uploadFileFast(sshClient, localTarPath, remoteArchive);
+    log(`[SFTP] Upload completado.`);
+
+    this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 20, message: '[ULTRA-LITE] Archivo subido. Iniciando script...' });
+
+    // 3. Generar credenciales de DB deterministas
+    const sha256 = crypto.createHash('sha256').update(domain).digest('hex').substring(0, 4);
+    const dbName = `wp_${sha256}`;
+    const dbUser = `u${sha256}`;
+    const dbPassword = crypto.randomBytes(8).toString('hex'); // 16 caracteres + Krx1! = 21 chars (Plesk safe)
+
+    const BLACKLIST_SQL = `'${BLACKLIST_USERS.join("','")}'`;
+
+    // 4. Construir script Bash
+    const bashScript = [
+      'set -u',
+      `cd "${HDP}" || { echo "[ERROR] No se puede acceder a httpdocs"; exit 1; }`,
+      '',
+      '# ── Limpieza de archivos previos ──',
+      `rm -f index.html favicon.ico 2>/dev/null || true`,
+      `find . -maxdepth 1 -type f \\( -name "*.tar.gz" -o -name "*.sql" -o -name "config.json" \\) ! -name "${short}_ulite.tar.gz" -exec rm -f {} \\; 2>/dev/null || true`,
+      '',
+      '# ── Extracción del paquete Ultra-Lite ──',
+      `tar -xzf "${short}_ulite.tar.gz" --warning=no-unknown-keyword 2>&1 || { echo "[ERROR] Fallo extracción"; exit 1; }`,
+      `rm -f "${short}_ulite.tar.gz"`,
+      '',
+      '# ── Leer config.json ──',
+      `PREFIX=$(cat config.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('db_prefix','wp_'))" 2>/dev/null || echo "wp_")`,
+      `THEME=$(cat config.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('theme','hello-elementor'))" 2>/dev/null || echo "hello-elementor")`,
+      '',
+      '# ── Detectar WP-CLI ──',
+      `WP_CMD="wp"`,
+      `if ! which wp >/dev/null 2>&1; then`,
+      `  [ -f "/usr/local/bin/wp" ] && WP_CMD="/usr/local/bin/wp"`,
+      `  [ -f "/usr/share/plesk-wp-cli/bin/wp-cli.phar" ] && WP_CMD="php /usr/share/plesk-wp-cli/bin/wp-cli.phar"`,
+      `  [ -f "/usr/bin/wp" ] && WP_CMD="/usr/bin/wp"`,
+      `fi`,
+      '',
+      '# ── Instalar WP Core limpio ──',
+      `$WP_CMD core download --allow-root --path="${HDP}" --skip-content 2>/dev/null || true`,
+      '',
+      '# ── Crear DB y usuario en Plesk ──',
+      `DB_EXISTS=$(plesk db -Nse "SELECT COUNT(*) FROM data_bases WHERE name='${dbName}'" 2>/dev/null || echo 0)`,
+      `if [ "$DB_EXISTS" -eq 0 ]; then`,
+      `  plesk bin database --create "${dbName}" -domain "${safeDom}" -type mysql -server localhost >/dev/null 2>&1 || { echo "[ERROR] No se pudo crear DB"; exit 1; }`,
+      `fi`,
+      `plesk bin database --create-dbuser "${dbUser}" -passwd "${dbPassword}Krx1!" -domain "${safeDom}" -server localhost:3306 -database "${dbName}" >/dev/null 2>&1 || true`,
+      `plesk bin database --update "${dbName}" -add_user "${dbUser}" >/dev/null 2>&1 || true`,
+      `plesk bin database --update-dbuser "${dbUser}" -passwd "${dbPassword}Krx1!" -server localhost:3306 >/dev/null 2>&1 || true`,
+      `DB_PASS="${dbPassword}Krx1!"`,
+      '',
+      '# ── Crear wp-config.php con prefix correcto ──',
+      `$WP_CMD config create --dbname="${dbName}" --dbuser="${dbUser}" --dbpass="$DB_PASS" --dbhost="localhost" --dbprefix="$PREFIX" --path="${HDP}" --allow-root --force 2>/dev/null`,
+      `NEW_URL="https://${safeDom}"`,
+      `$WP_CMD config set WP_HOME "$NEW_URL" --path="${HDP}" --allow-root 2>/dev/null || true`,
+      `$WP_CMD config set WP_SITEURL "$NEW_URL" --path="${HDP}" --allow-root 2>/dev/null || true`,
+      `$WP_CMD config set WP_MEMORY_LIMIT "512M" --path="${HDP}" --allow-root 2>/dev/null || true`,
+      `$WP_CMD config set FS_METHOD "direct" --path="${HDP}" --allow-root 2>/dev/null || true`,
+      '',
+      '# ── Mover uploads al lugar correcto ──',
+      `mkdir -p "${HDP}/wp-content/uploads"`,
+      `if [ -d "${HDP}/uploads" ]; then`,
+      `  cp -rT "${HDP}/uploads" "${HDP}/wp-content/uploads" && rm -rf "${HDP}/uploads"`,
+      `fi`,
+      '',
+      '# ── Importar SQL saneado ──',
+      `SQL_FILE=$(find . -maxdepth 1 -name "*.sql" ! -name "*hostinger*" -print -quit)`,
+      `[ -z "$SQL_FILE" ] && SQL_FILE=$(find . -maxdepth 1 -name "*.sql" -print -quit)`,
+      `if [ -z "$SQL_FILE" ] || [ ! -s "$SQL_FILE" ]; then echo "[ERROR] SQL no encontrado"; exit 1; fi`,
+      `echo "SET FOREIGN_KEY_CHECKS=0;" > _sanitized.sql`,
+      `sed -E -e 's#\\/\\*!50013 DEFINER=[^*]*\\*\\/##g' -e 's#\\/\\*!50017 DEFINER=[^*]*\\*\\/##g' -e 's/DEFINER=[a-zA-Z0-9_@.\`"]+//g' -e '/\\/\\*!50003 TRIGGER/d' -e 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' -e 's/utf8mb4_unicode_520_ci/utf8mb4_unicode_ci/g' -e '/^CREATE DATABASE/d' -e '/^USE /d' "$SQL_FILE" >> _sanitized.sql || true`,
+      `echo "SET FOREIGN_KEY_CHECKS=1;" >> _sanitized.sql`,
+      `mysql -u"${dbUser}" -p"$DB_PASS" --force "${dbName}" < _sanitized.sql > _sql_error.log 2>&1 || { echo "[ERROR] Importación SQL falló. Detalles:"; head -n 10 _sql_error.log; exit 1; }`,
+      `rm -f _sanitized.sql`,
+      '',
+      '# ── Limpieza de triggers y spam ──',
+      `TRIGGERS=$(mysql -u"${dbUser}" -p"$DB_PASS" -B -N -e "SHOW TRIGGERS FROM \\\`${dbName}\\\`;" 2>/dev/null | awk '{print $1}')`,
+      `for trigger in $TRIGGERS; do mysql -u"${dbUser}" -p"$DB_PASS" "${dbName}" -e "DROP TRIGGER IF EXISTS \\\`$trigger\\\`;" 2>/dev/null || true; done`,
+      `mysql -u"${dbUser}" -p"$DB_PASS" "${dbName}" -e "`,
+      `  DELETE FROM \\\`${dbName}\\\`.\\\`\${PREFIX}posts\\\` WHERE LOWER(post_title) REGEXP 'casino|slot|bet|apuestas|tragamonedas|blackjack|porn' OR LOWER(post_content) REGEXP 'casino|slot|bet|apuestas|tragamonedas';`,
+      `  DELETE u FROM \\\`${dbName}\\\`.\\\`\${PREFIX}users\\\` u WHERE u.user_login IN (${BLACKLIST_SQL});`,
+      `  DELETE FROM \\\`${dbName}\\\`.\\\`\${PREFIX}options\\\` WHERE option_name LIKE '_transient_%' OR option_name LIKE '_site_transient_%';`,
+      `" 2>/dev/null || true`,
+      '',
+      '# ── Validar integridad (>11 tablas) ──',
+      `TABLE_COUNT=$(mysql -u"${dbUser}" -p"$DB_PASS" -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${dbName}' AND table_type='BASE TABLE';" 2>/dev/null || echo 0)`,
+      `if [ "$TABLE_COUNT" -lt 11 ]; then echo "[ERROR] Solo $TABLE_COUNT tablas importadas. Abortando."; exit 1; fi`,
+      `echo "[OK] DB verificada: $TABLE_COUNT tablas."`,
+      '',
+      '# ── Search-Replace de URLs y Limpieza de Rutas Absolutas ──',
+      `$WP_CMD search-replace "http://${safeDom}" "https://${safeDom}" --all-tables --allow-root --path="${HDP}" 2>/dev/null || true`,
+      `mysql -u"${dbUser}" -p"$DB_PASS" "${dbName}" -e "UPDATE \\\`\${PREFIX}options\\\` SET option_value='https://${safeDom}' WHERE option_name IN ('siteurl','home');" 2>/dev/null || true`,
+      `$WP_CMD option delete upload_path --allow-root --path="${HDP}" 2>/dev/null || true`,
+      `$WP_CMD option set upload_path "" --allow-root --path="${HDP}" 2>/dev/null || true`,
+      `$WP_CMD rewrite flush --hard --allow-root --path="${HDP}" 2>/dev/null || true`,
+      `$WP_CMD elementor flush_css --allow-root --path="${HDP}" 2>/dev/null || true`,
+      '',
+      '# ── Instalar tema ──',
+      `$WP_CMD theme install "$THEME" --activate --allow-root --path="${HDP}" 2>/dev/null || $WP_CMD theme install hello-elementor --activate --allow-root --path="${HDP}" 2>/dev/null || true`,
+      '# Eliminar temas por defecto de WordPress',
+      `$WP_CMD theme delete twentytwentyfive twentytwentyfour twentytwentythree twentytwentytwo twentytwentyone twentytwenty --allow-root --path="${HDP}" 2>/dev/null || true`,
+      '',
+      '# ── Instalar plugins gratuitos desde config.json ──',
+      `python3 -c "import sys,json; [print(p) for p in json.load(open('config.json')).get('plugins',[]) if p not in ('elementor-pro',)]" 2>/dev/null | while read PLUGIN; do`,
+      `  echo "[PLUGIN] Instalando: $PLUGIN"`,
+      `  $WP_CMD plugin install "$PLUGIN" --activate --allow-root --path="${HDP}" 2>/dev/null && echo "[OK] $PLUGIN" || echo "[WARN] Falló: $PLUGIN — instalar manualmente"`,
+      `done`,
+      '',
+      '# ── Registro WP-Toolkit ──',
+      `DOMAIN_ID=$(plesk db -Ne "SELECT id FROM domains WHERE name='${safeDom}'" 2>/dev/null | xargs || true)`,
+      `if [ -n "$DOMAIN_ID" ]; then`,
+      `  plesk ext wp-toolkit --detach -main-domain-id "$DOMAIN_ID" -path httpdocs >/dev/null 2>&1 || true`,
+      `  rm -f "${HDP}/.wp-toolkit.json" "${HDP}/.wp-toolkit-ignore" || true`,
+      `  plesk ext wp-toolkit --register -main-domain-id "$DOMAIN_ID" -path httpdocs >/dev/null 2>&1 || true`,
+      `fi`,
+      '',
+      '# ── Corrección de Propietario (Permisos Linux) ──',
+      `DOMAIN_USER=$(plesk db -Ne "SELECT sys_users.login FROM sys_users JOIN hosting ON sys_users.id = hosting.sys_user_id JOIN domains ON hosting.dom_id = domains.id WHERE domains.name = '${safeDom}'" 2>/dev/null | xargs || true)`,
+      `if [ -n "$DOMAIN_USER" ]; then`,
+      `  chown -R "$DOMAIN_USER":psacln "${HDP}"`,
+      `  find "${HDP}" -type d -exec chmod 755 {} \\;`,
+      `  find "${HDP}" -type f -exec chmod 644 {} \\;`,
+      `fi`,
+      '',
+      '# ── Eliminar residuos SQL de httpdocs ──',
+      `rm -f "${HDP}"/*.sql "${HDP}/config.json" 2>/dev/null || true`,
+      '',
+      'echo "[ULTRA-LITE] Despliegue completado."',
+      'exit 0',
+    ].join('\n');
+
+    log(`[BASH] Ejecutando script Ultra-Lite en ${safeDom}...`);
+    this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 40, message: '[ULTRA-LITE] Ejecutando script remoto...' });
+
+    const bashResult = await this.sshService.executeStreamCommand(sshClient, bashScript, (chunk) => {
+      if (chunk.trim()) EMIT.emit('debug', chunk.trim(), domain);
+    });
+
+    if ((bashResult.code ?? 0) !== 0) {
+      const lastLines = (bashResult.stderr || bashResult.stdout || '').split('\n').slice(-10).join('\n');
+      throw new Error(`[ULTRA-LITE] Script falló (code=${bashResult.code}):\n${lastLines}`);
+    }
+
+    this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 75, message: '[ULTRA-LITE] Script completado. Inyectando Elementor Pro...' });
+
+    // 5. Inyectar Elementor Pro (si está configurado)
+    if (epZipPath && epLicenseKey) {
+      try {
+        log(`[ELEMENTOR] Subiendo elementor-pro.zip...`);
+        const remoteEpZip = `${HDP}/elementor-pro.zip`;
+        await this.sshService.uploadFileFast(sshClient, epZipPath, remoteEpZip);
+
+        const epScript = [
+          `WP_CMD="wp"`,
+          `if ! which wp >/dev/null 2>&1; then`,
+          `  [ -f "/usr/local/bin/wp" ] && WP_CMD="/usr/local/bin/wp"`,
+          `  [ -f "/usr/share/plesk-wp-cli/bin/wp-cli.phar" ] && WP_CMD="php /usr/share/plesk-wp-cli/bin/wp-cli.phar"`,
+          `fi`,
+          `$WP_CMD plugin install "${HDP}/elementor-pro.zip" --activate --force --allow-root --path="${HDP}" && echo "[OK] Elementor Pro instalado" || echo "[WARN] Elementor Pro ZIP falló"`,
+          `sleep 5`,
+          `EP_KEY='${epLicenseKey.trim().replace(/'/g, "'\\''")}'`,
+          `LICENSE_OUT=$($WP_CMD elementor-pro license activate "$EP_KEY" --allow-root --path="${HDP}" 2>&1)`,
+          `LICENSE_CODE=$?`,
+          `if [ $LICENSE_CODE -eq 0 ]; then`,
+          `  echo "[OK] Licencia activada: $LICENSE_OUT"`,
+          `else`,
+          `  echo "[WARN] Activación de licencia falló (code: $LICENSE_CODE). Salida: $LICENSE_OUT"`,
+          `fi`,
+          `rm -f "${HDP}/elementor-pro.zip"`,
+          `DOMAIN_USER=$(plesk db -Ne "SELECT sys_users.login FROM sys_users JOIN hosting ON sys_users.id = hosting.sys_user_id JOIN domains ON hosting.dom_id = domains.id WHERE domains.name = '${safeDom}'" 2>/dev/null | xargs || true)`,
+          `if [ -n "$DOMAIN_USER" ]; then chown -R "$DOMAIN_USER":psacln "${HDP}/wp-content/plugins/elementor-pro" 2>/dev/null || true; fi`,
+        ].join('\n');
+
+        const epResult = await this.sshService.executeStreamCommand(sshClient, epScript, (chunk) => {
+          if (chunk.trim()) EMIT.emit('debug', chunk.trim(), domain);
+        });
+        if ((epResult.code ?? 0) !== 0) {
+          log(`[ELEMENTOR] Advertencia: código de salida ${epResult.code} al instalar Pro.`);
+        }
+        log(`[ELEMENTOR] Finalizado proceso de Elementor Pro.`);
+      } catch (epErr) {
+        EMIT.emit('warning', `[ELEMENTOR] Error no fatal inyectando Elementor Pro: ${epErr.message}`, domain);
+      }
+    }
+
+    this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 90, message: '[ULTRA-LITE] Descargando DB desinfectada...' });
+
+    // 6. Reverse SSH: Descargar el dump del SQL ya saneado desde el servidor
+    try {
+      const remoteDumpPath = `/tmp/${short}_clean_${Date.now()}.sql`;
+      const dumpCmd = `mysqldump -u"wp_${sha256}" -p"${dbPassword}Krx1!" --single-transaction --no-tablespaces "${dbName}" > "${remoteDumpPath}" 2>/dev/null && echo "OK" || echo "FAIL"`;
+      const dumpResult = await this.sshService.executeCommand(sshClient, dumpCmd);
+
+      if ((dumpResult.stdout || '').includes('OK')) {
+        // Descargar el dump al directorio local del tar
+        const localDir = path.dirname(localTarPath);
+        const localCleanSqlPath = path.join(localDir, `${domain}.sql`);
+        await this.sshService.downloadFile(sshClient, remoteDumpPath, localCleanSqlPath);
+        await this.sshService.executeCommand(sshClient, `rm -f "${remoteDumpPath}"`);
+        log(`[REVERSE-SSH] DB desinfectada guardada localmente: ${domain}.sql`);
+      }
+    } catch (reverseErr) {
+      EMIT.emit('warning', `[REVERSE-SSH] No fatal: ${reverseErr.message}`, domain);
+    }
+
+    const duration = ((Date.now() - startTime) / 1000).toFixed(0);
+    log(`[ULTRA-LITE] ✅ ${domain} desplegado en ${duration}s`);
+    this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 100, message: `[ULTRA-LITE] ${domain} completado en ${duration}s` });
+
+    return { domain, safeDomain: safeDom, status: 'success', mode: 'ultra-lite', duration };
+  }
+
 
   /**
    * Get Plesk document root for a domain

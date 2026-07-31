@@ -143,16 +143,14 @@ function ToastItem({
         alignItems: 'center',
         gap: 'var(--space-sm)',
         padding: '0 var(--space-sm)',
-        backgroundColor: 'var(--surface-overlay)',
-        border: '1px solid var(--border-default)',
         borderRadius: 8,
         fontSize: 13,
-        color: 'var(--text-primary)',
         boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
         borderLeft: `2px solid ${config.accent}`,
         cursor: 'default',
         minWidth: 260,
       }}
+      className="bg-surface-container border border-outline-variant text-on-surface"
       onClick={() => onRemove(toast.id)}
     >
       <Icon size={16} style={{ color: config.accent, flexShrink: 0 }} />

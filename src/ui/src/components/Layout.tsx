@@ -16,6 +16,7 @@ const NAV_MODULES: readonly NavModule[] = [
   { id: 'validation',  name: 'Validación',   description: 'Fase 4: Post-migración' },
   { id: 'sourcesync', name: 'SourceSync',   description: 'Despliegue Git a Plesk' },
   { id: 'cms',         name: 'Reconstructor', description: 'Reconstrucción WP en masa' },
+  { id: 'rescuesorter',name: 'Organizador Rescue', description: 'Ordena backups huérfanos' },
   { id: 'security',    name: 'Seguridad',     description: 'Administración avanzada' },
   { id: 'config',      name: 'Configuración', description: 'Cuentas y llaves SSH' },
   { id: 'terminal',    name: 'Terminal',      description: 'Herramientas avanzadas' },
@@ -33,6 +34,8 @@ const MODULE_ICONS: Record<string, string> = {
   sourcesync: 'M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2l.55-.55M15 12H7M20.4 5.6a5.5 5.5 0 0 0-7.77 7.77l7.77-7.77zM9 6.5V12M15 12l1.5 1.5',
   // Wrench: CMS Reconstructor
   cms:         'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
+  // Lifebuoy: Rescue Sorter
+  rescuesorter: 'M12 22A10 10 0 1 0 12 2a10 10 0 0 0 0 20z M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M4.93 4.93l4.24 4.24 M14.83 14.83l4.24 4.24 M14.83 9.17l4.24-4.24 M4.93 19.07l4.24-4.24',
   // Escudo: Seguridad
   security:    'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   config:      'M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z M15 12a3 3 0 11-6 0 3 3 0 016 0z',
@@ -59,14 +62,14 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
   return (
     <div
       className="h-screen flex flex-col"
-      style={{ backgroundColor: 'var(--surface-base)', color: 'var(--text-primary)' }}
+      style={{ backgroundColor: 'var(--surface-base)', color: '#ffffff' }}
     >
       {/* ── Top Header ── */}
       <header
         className="flex items-center justify-between px-4 py-2.5 border-b"
         style={{
           backgroundColor: 'var(--surface-raised)',
-          borderBottomColor: 'var(--border-default)',
+          borderBottomColor: 'rgba(255, 255, 255, 0.1)',
           minHeight: '48px',
         }}
       >
@@ -83,10 +86,10 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
             </svg>
           </button>
           <div>
-            <h1 className="font-display text-base font-bold" style={{ color: 'var(--text-primary)' }}>
+            <h1 className="font-display text-base font-bold" style={{ color: '#ffffff' }}>
               Kraken CLI
             </h1>
-            <p className="text-xs leading-none" style={{ color: 'var(--text-muted)' }}>
+            <p className="text-xs leading-none" style={{ color: '#a5a5a5' }}>
               Centro de control de migraciones
             </p>
           </div>
@@ -104,7 +107,7 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
             style={{
               width: '220px',
               backgroundColor: 'var(--surface-raised)',
-              borderRightColor: 'var(--border-default)',
+              borderRightColor: 'rgba(255, 255, 255, 0.1)',
             }}
           >
             <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
@@ -116,11 +119,11 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
                     onClick={() => onModuleChange(mod.id)}
                     className="w-full flex items-center gap-3 px-3 py-2 rounded-md transition-all duration-150 ease-out"
                     style={{
-                      backgroundColor: isActive ? 'var(--surface-overlay)' : 'transparent',
-                      color: isActive ? 'var(--color-accent)' : 'var(--text-secondary)',
+                      backgroundColor: isActive ? 'rgba(255, 255, 255, 0.05)' : 'transparent',
+                      color: isActive ? '#34ace0' : '#d1d1d1',
                     }}
                     onMouseEnter={(e) => {
-                      if (!isActive) e.currentTarget.style.backgroundColor = 'var(--surface-overlay)';
+                      if (!isActive) e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.05)';
                     }}
                     onMouseLeave={(e) => {
                       if (!isActive) e.currentTarget.style.backgroundColor = 'transparent';
@@ -135,7 +138,7 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
                     </svg>
                     <div className="text-left min-w-0">
                       <div className="text-sm font-medium truncate">{mod.name}</div>
-                      <div className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+                      <div className="text-xs truncate" style={{ color: '#a5a5a5' }}>
                         {mod.description}
                       </div>
                     </div>
@@ -145,8 +148,8 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
             </nav>
 
             {/* ── System Status ── */}
-            <div className="px-4 py-3 border-t space-y-2" style={{ borderTopColor: 'var(--border-default)' }}>
-              <div className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+            <div className="px-4 py-3 border-t space-y-2" style={{ borderTopColor: 'rgba(255, 255, 255, 0.1)' }}>
+              <div className="text-xs font-medium" style={{ color: '#a5a5a5' }}>
                 Estado del sistema
               </div>
               <div className="space-y-1.5">
@@ -162,7 +165,7 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
             {/* ── Author Signature ── */}
             <div
               className="px-4 py-2.5 border-t"
-              style={{ borderTopColor: 'var(--border-default)' }}
+              style={{ borderTopColor: 'rgba(255, 255, 255, 0.1)' }}
             >
               <button
                 onClick={() => {
@@ -171,7 +174,7 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
                   } catch {}
                 }}
                 className="flex items-center gap-2 text-xs transition-opacity duration-150 ease-out w-full"
-                style={{ color: 'var(--text-muted)', opacity: 0.6 }}
+                style={{ color: '#a5a5a5', opacity: 0.6 }}
                 onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.6'; }}
               >
@@ -196,12 +199,12 @@ export default function Layout({ children, activeModule, onModuleChange }: Layou
 // ── Status Row inline component ──
 function StatusRow({ label, online }: { label: string; online: boolean }) {
   return (
-    <div className="flex justify-between items-center text-xs" style={{ color: 'var(--text-secondary)' }}>
+    <div className="flex justify-between items-center text-xs" style={{ color: '#d1d1d1' }}>
       <span>{label}</span>
       <span
         className="status-dot"
         style={{
-          backgroundColor: online ? 'var(--color-success)' : 'var(--color-error)',
+          backgroundColor: online ? '#33d9b2' : '#ff5252',
           animation: online ? 'pulse 2s ease-in-out infinite' : 'none',
         }}
       />
@@ -254,13 +257,13 @@ function VersionFooter({ appVersion }: { appVersion: string }) {
   return (
     <div
       className="px-4 py-2.5 border-t"
-      style={{ borderTopColor: 'var(--border-default)' }}
+      style={{ borderTopColor: 'rgba(255, 255, 255, 0.1)' }}
     >
       <div className="flex items-center justify-between">
         <span
           className="text-xs"
           style={{
-            color: 'var(--text-muted)',
+            color: '#a5a5a5',
             fontFamily: 'var(--font-mono, monospace)',
             letterSpacing: '0.03em',
           }}
@@ -275,7 +278,7 @@ function VersionFooter({ appVersion }: { appVersion: string }) {
             background: 'none',
             border: 'none',
             cursor: checkState === 'checking' ? 'default' : 'pointer',
-            color: checkState === 'checking' ? 'var(--text-muted)' : 'var(--color-accent)',
+            color: checkState === 'checking' ? '#a5a5a5' : '#34ace0',
             opacity: checkState === 'checking' ? 0.6 : 0.8,
             padding: '2px 4px',
             borderRadius: '4px',
@@ -297,7 +300,7 @@ function VersionFooter({ appVersion }: { appVersion: string }) {
         <div
           className="text-xs mt-1.5"
           style={{
-            color: 'var(--color-success)',
+            color: '#33d9b2',
             animation: 'notifier-slide-in 150ms ease-out forwards',
           }}
         >
@@ -308,7 +311,7 @@ function VersionFooter({ appVersion }: { appVersion: string }) {
         <div
           className="text-xs mt-1.5"
           style={{
-            color: 'var(--color-error)',
+            color: '#ff5252',
             animation: 'notifier-slide-in 150ms ease-out forwards',
           }}
         >

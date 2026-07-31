@@ -31,20 +31,16 @@ interface StatTileProps {
 function StatTile({ icon, label, value, color }: StatTileProps) {
   const colorVar =
     color === 'success'
-      ? 'var(--color-success)'
+      ? '#33d9b2'
       : color === 'warning'
-        ? 'var(--color-warning)'
+        ? '#ffb142'
         : color === 'error'
-          ? 'var(--color-error)'
-          : 'var(--color-accent)';
+          ? '#ff5252'
+          : '#34ace0';
 
   return (
     <div
-      className="flex items-center gap-3 p-3 rounded-lg"
-      style={{
-        backgroundColor: 'var(--surface-overlay)',
-        border: '1px solid var(--border-default)',
-      }}
+      className="flex items-center gap-3 p-3 rounded-lg bg-surface-container-low border border-outline-variant"
     >
       <div
         className="flex items-center justify-center rounded-lg"
@@ -58,7 +54,7 @@ function StatTile({ icon, label, value, color }: StatTileProps) {
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <div className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+        <div className="text-[10px] font-medium uppercase tracking-wider text-on-surface-variant">
           {label}
         </div>
         <div className="text-sm font-bold font-mono truncate">{value}</div>
@@ -78,12 +74,12 @@ export default function ServerDetailView({
   // ── No diagnostics state ──
   if (!server.diagnostics) {
     return (
-      <div className="text-center py-12" style={{ color: 'var(--text-muted)' }}>
+      <div className="text-center py-12 text-on-surface-variant">
         <Activity size={32} className="mx-auto mb-3 opacity-40" />
         <p className="text-sm">Sin datos de diagnóstico</p>
         <button
           onClick={() => onRunDiagnostics(server.name)}
-          className="btn btn--secondary text-xs mt-4"
+          className="px-3 py-1.5 mt-4 bg-surface-container border border-outline-variant text-on-surface rounded font-title-sm text-xs hover:bg-surface-container-high transition-all active:scale-95 disabled:opacity-50 inline-flex items-center gap-1.5"
         >
           <RefreshCw size={12} />
           Ejecutar diagnóstico
@@ -114,10 +110,9 @@ export default function ServerDetailView({
 
       {/* ── Resource bars (detailed) ── */}
       <div
-        className="p-4 rounded-lg space-y-4"
-        style={{ backgroundColor: 'var(--surface-overlay)', border: '1px solid var(--border-default)' }}
+        className="p-4 rounded-lg space-y-4 bg-surface-container-low border border-outline-variant"
       >
-        <h3 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-on-surface-variant">
           Recursos en detalle
         </h3>
 
@@ -126,7 +121,7 @@ export default function ServerDetailView({
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium flex items-center gap-1.5">
-                <Cpu size={12} style={{ color: 'var(--color-accent)' }} />
+                <Cpu size={12} className="text-tertiary" />
                 CPU
               </span>
               <span className="text-xs font-mono">
@@ -140,7 +135,7 @@ export default function ServerDetailView({
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium flex items-center gap-1.5">
-                <Zap size={12} style={{ color: 'var(--color-success)' }} />
+                <Zap size={12} className="text-green-400" />
                 RAM
               </span>
               <span className="text-xs font-mono">
@@ -154,7 +149,7 @@ export default function ServerDetailView({
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-medium flex items-center gap-1.5">
-                <HardDrive size={12} style={{ color: 'var(--color-warning)' }} />
+                <HardDrive size={12} className="text-yellow-400" />
                 Disco
               </span>
               <span className="text-xs font-mono">

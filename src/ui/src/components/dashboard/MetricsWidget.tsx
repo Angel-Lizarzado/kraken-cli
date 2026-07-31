@@ -14,7 +14,7 @@ interface GaugeData {
 
 function Gauge({ data }: { data: GaugeData }) {
   const pct = Math.min((data.value / data.max) * 100, 100);
-  const color = pct > 90 ? 'var(--color-error)' : pct > 70 ? 'var(--color-warning)' : 'var(--color-success)';
+  const color = pct > 90 ? '#ff5252' : pct > 70 ? '#ffb142' : '#33d9b2';
   const radius = 36;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (pct / 100) * circumference;
@@ -22,7 +22,7 @@ function Gauge({ data }: { data: GaugeData }) {
   return (
     <div className="flex flex-col items-center gap-1.5">
       <svg width="90" height="90" viewBox="0 0 90 90">
-        <circle cx="45" cy="45" r={radius} fill="none" stroke="var(--surface-overlay)" strokeWidth="6" />
+        <circle cx="45" cy="45" r={radius} fill="none" stroke="rgba(255, 255, 255, 0.05)" strokeWidth="6" />
         <motion.circle
           cx="45" cy="45" r={radius}
           fill="none" stroke={color} strokeWidth="6"
@@ -35,7 +35,7 @@ function Gauge({ data }: { data: GaugeData }) {
         />
       </svg>
       <span className="text-lg font-bold font-mono">{Math.round(pct)}%</span>
-      <span className="text-xs" style={{ color: 'var(--text-muted)' }}>{data.label}</span>
+      <span className="text-xs" style={{ color: '#a5a5a5' }}>{data.label}</span>
     </div>
   );
 }

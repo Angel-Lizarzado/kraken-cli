@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @module SOURCESYNC/nodeManager
  * @description Gestión resiliente de versiones de Node.js en Plesk.
  *
@@ -20,7 +20,7 @@
 const VERSION_FALLBACK = '24.15.0';
 
 /** Prefijos de versiones LTS preferidas (en orden de preferencia descendente). */
-const PREFIJOS_LTS = ['22.', '20.'];
+const PREFIJOS_LTS = ['26.', '24.', '22.', '20.'];
 
 /**
  * Parsea la salida de `plesk ext nodejs --versions` y devuelve un array de objetos.
@@ -36,16 +36,29 @@ function parsearVersiones(stdout) {
   return stdout
     .split('\n')
     .map((linea) => linea.trim())
-    .filter((linea) => linea.length > 0)
+    .filter((linea) => linea.length > 0 && !linea.toLowerCase().includes('enabled'))
     .map((linea) => {
       const partes = linea.split(/\s+/);
+      
+      let version = '';
+      let habilitada = false;
+      
+      // Detectar formato nuevo (true 26.3.0) vs formato viejo (20.20.2 false)
+      if (partes[0] === 'true' || partes[0] === 'false') {
+        habilitada = partes[0] === 'true';
+        version = partes[1] || '';
+      } else {
+        version = partes[0] || '';
+        habilitada = partes[1] === 'true';
+      }
+
       return {
-        version: partes[0] || '',
-        habilitada: partes[1] === 'true',
-        indice: parseInt(partes[2] ?? '-1', 10),
+        version,
+        habilitada,
+        indice: -1,
       };
     })
-    .filter((v) => v.version.match(/^\d+\.\d+\.\d+$/)); // Solo versiones semver válidas
+    .filter((v) => v.version.match(/^\d+\.\d+(\.\d+)?$/)); // Soporta semver completa o sin patch
 }
 
 /**
@@ -76,14 +89,15 @@ async function intentarAsignarVersion(ssh, domain, version) {
   );
 
   if (code !== 0) {
+    const errorMsg = stderr || stdout;
     console.warn(
-      `[SOURCESYNC:Node] Fallo al asignar Node.js ${version} a ${domain} (código ${code}): ${stderr || stdout}`
+      `[SOURCESYNC:Node] Fallo al asignar Node.js ${version} a ${domain} (código ${code}): ${errorMsg}`
     );
-    return false;
+    return { success: false, errorMsg };
   }
 
   console.log(`[SOURCESYNC:Node] ✓ Node.js ${version} asignado a ${domain}. Respuesta: ${stdout || '(ok)'}`);
-  return true;
+  return { success: true };
 }
 
 /**
@@ -128,7 +142,17 @@ async function garantizarVersionNode(ssh, domain) {
     `[SOURCESYNC:Node] Versiones detectadas: ${versiones.map((v) => `${v.version}(${v.habilitada ? 'ON' : 'OFF'})`).join(', ') || 'ninguna'}`
   );
 
-  // ── Intento 1: Versión LTS preferida (22.x > 20.x) ──────────────────────
+  if (versiones.length === 0) {
+    throw new Error(
+      `[SOURCESYNC:Node] Fallo crítico: Plesk no reportó versiones instaladas (o falló el parseo).\n` +
+      `Respuesta cruda de Plesk (--versions): "${listaRaw}"\n` +
+      `Código de salida: ${codeLista}`
+    );
+  }
+
+  let lastErrorMsg = 'Desconocido';
+
+  // ── Intento 1: Versión LTS preferida (24.x > 22.x > 20.x) ──────────────────────
   for (const prefijo of PREFIJOS_LTS) {
     const candidatas = versiones
       .filter((v) => v.version.startsWith(prefijo))
@@ -138,29 +162,34 @@ async function garantizarVersionNode(ssh, domain) {
       });
 
     for (const candidata of candidatas) {
-      const exito = await intentarAsignarVersion(ssh, domain, candidata.version);
-      if (exito) {
+      const { success, errorMsg } = await intentarAsignarVersion(ssh, domain, candidata.version);
+      if (success) {
         return candidata.version;
+      } else {
+        lastErrorMsg = errorMsg;
       }
     }
   }
 
-  // ── Intento 2 (Fallback): v24.15.0 — Validada en producción ─────────────
+  // ── Intento 2 (Fallback): La primera versión que devuelva Plesk ─────────────
+  const fallbackDinamico = versiones.sort((a, b) => b.version.localeCompare(a.version, undefined, { numeric: true }))[0]?.version || VERSION_FALLBACK;
+
   console.warn(
     `[SOURCESYNC:Node] Las versiones LTS fallaron o no están disponibles. ` +
-    `Aplicando fallback forzado a v${VERSION_FALLBACK}...`
+    `Aplicando fallback forzado a v${fallbackDinamico}...`
   );
 
-  const exitoFallback = await intentarAsignarVersion(ssh, domain, VERSION_FALLBACK);
+  const { success: exitoFallback, errorMsg: fallbackError } = await intentarAsignarVersion(ssh, domain, fallbackDinamico);
 
   if (!exitoFallback) {
     throw new Error(
-      `[SOURCESYNC:Node] Fallo crítico: No se pudo asignar ninguna versión de Node.js al dominio ${domain}. ` +
+      `[SOURCESYNC:Node] Fallo crítico: Plesk rechazó la asignación de Node.js al dominio ${domain}.\n` +
+      `Detalle del error de Plesk: ${fallbackError || lastErrorMsg}\n` +
       `Verificar manualmente en el panel Plesk → Extensiones → Node.js.`
     );
   }
 
-  return VERSION_FALLBACK;
+  return fallbackDinamico;
 }
 
 module.exports = { garantizarVersionNode, parsearVersiones, VERSION_FALLBACK };

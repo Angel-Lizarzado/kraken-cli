@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
-import Layout from './components/Layout';
+import MainLayout from './components/MainLayout';
 import Dashboard from './components/Dashboard';
 import SyncDnsModule from './components/SyncDnsModule';
 import ExtractionModule from './components/ExtractionModule';
@@ -7,10 +7,10 @@ import DeploymentModule from './components/DeploymentModule';
 import ProvisioningModule from './components/ProvisioningModule';
 import ConfigPanel from './components/ConfigPanel';
 import MalwareScannerModule from './components/MalwareScannerModule';
-import TerminalModule from './components/TerminalModule';
 import SourceSyncModule from './components/SourceSyncModule';
 import SecurityModule from './components/SecurityModule';
 import CmsReconstructorModule from './components/CmsReconstructorModule';
+import RescueSorterModule from './components/RescueSorterModule';
 import { ToastProvider } from './components/Toast';
 import UpdateNotifier from './components/UpdateNotifier';
 import { ConfigProvider } from './contexts/ConfigContext';
@@ -19,12 +19,9 @@ import { useIpc } from './hooks/useIpc';
 import { useLogBuffer } from './hooks/useLogBuffer';
 import type { LogLevel } from './types/ipc';
 
-// ── IDs de módulos que se montan permanentemente ──────────────────────────────
-// Cada módulo se renderiza UNA sola vez al iniciar la app y permanece montado
-// en el DOM. Cambiar de pestaña solo alterna `display` via CSS, preservando
-// el estado interno de React (useState, refs, timers, IPC listeners).
-//
-// Esto resuelve el desmontaje destructivo que causaba AnimatePresence + key={activeModule}.
+// ── Persistent module IDs ─────────────────────────────────────────────────────
+// All modules mount once and stay mounted. Tab switching only toggles display
+// via CSS, preserving all React state (hooks, timers, IPC listeners).
 const PERSISTENT_MODULE_IDS = [
   'dashboard',
   'syncdns',
@@ -33,10 +30,10 @@ const PERSISTENT_MODULE_IDS = [
   'provisioning',
   'config',
   'validation',
-  'terminal',
   'sourcesync',
   'security',
   'cms',
+  'rescuesorter',
 ] as const;
 
 type ModuleId = typeof PERSISTENT_MODULE_IDS[number];
@@ -46,10 +43,8 @@ export default function App() {
   const { isConnected, progressEvents } = useIpc();
   const [activeModule, setActiveModule] = useState<ModuleId>('dashboard');
 
-  // Log buffer desacoplado del progress-emitter
   const { entries: logEntries, clear: clearLogs } = useLogBuffer();
 
-  // Tracking legacy de progress events para compatibilidad con módulos antiguos
   const progressLenRef = useRef(0);
   useEffect(() => {
     if (progressEvents.length <= progressLenRef.current) return;
@@ -62,30 +57,33 @@ export default function App() {
     }
   }, []);
 
-  // onLog: los logs ya viajan por log:batch desde el Main Process.
-  // Esta función existe solo para compatibilidad de prop en módulos heredados.
+  // logToConsole: compatibility shim for modules that accept onLog prop.
+  // Real logs flow via log:batch IPC from the Main Process.
   const logToConsole = useCallback((_message: string, _type: LogLevel = 'info') => {}, []);
 
-  // Referencia para suprimir warning de isConnected sin usar (se puede usar para UI futura)
+  // Logs filtered by module for per-module terminals
+  const getModuleLogs = useCallback((moduleId: string) =>
+    logEntries.filter(e => e.module === moduleId || !e.module),
+    [logEntries]
+  );
+
   void isConnected;
+  void clearLogs;
 
   return (
     <ConfigProvider>
       <AppStateProvider>
         <ToastProvider>
-          <Layout activeModule={activeModule} onModuleChange={handleModuleChange}>
-            {/* UpdateNotifier: siempre activo, escucha IPC del autoUpdater */}
+          <MainLayout activeModule={activeModule as string} setActiveModule={(m) => handleModuleChange(m)}>
             <UpdateNotifier />
             {/*
-              Estrategia de persistencia: TODOS los módulos están montados simultáneamente.
-              Solo el módulo activo tiene display != 'none'.
-              - React mantiene todo el estado interno intacto (hooks, timers, refs).
-              - Los listeners IPC siguen funcionando en segundo plano.
-              - El usuario puede navegar a DNS mientras una migración corre y volver
-                sin perder ni un solo log ni el progreso visual.
-              - No se usa AnimatePresence/key porque eso causa remount destructivo.
-              - Transición: opacity suave manejada por CSS transition en la clase
-                `.module-pane` y `.module-pane--active` (ver index.css).
+              Persistence strategy: ALL modules are mounted simultaneously.
+              Only the active module has display !== 'none'.
+              - React keeps all internal state intact (hooks, timers, refs).
+              - IPC listeners keep working in the background.
+              - Navigation between tabs preserves all progress and log history.
+              - No AnimatePresence/key (that causes destructive remount).
+              - Modules are shown/hidden via conditional Tailwind classes (flex vs hidden).
             */}
             <div className="relative min-h-0 flex-1 flex flex-col">
 
@@ -94,19 +92,19 @@ export default function App() {
               </ModulePane>
 
               <ModulePane id="syncdns" activeModule={activeModule}>
-                <SyncDnsModule onLog={logToConsole} />
+                <SyncDnsModule onLog={logToConsole} logs={getModuleLogs('syncdns')} />
               </ModulePane>
 
               <ModulePane id="extraction" activeModule={activeModule}>
-                <ExtractionModule onLog={logToConsole} />
+                <ExtractionModule onLog={logToConsole} logs={getModuleLogs('extraction')} />
               </ModulePane>
 
               <ModulePane id="migration" activeModule={activeModule}>
-                <DeploymentModule onLog={logToConsole} />
+                <DeploymentModule onLog={logToConsole} logs={getModuleLogs('migration')} />
               </ModulePane>
 
               <ModulePane id="provisioning" activeModule={activeModule}>
-                <ProvisioningModule onLog={logToConsole} />
+                <ProvisioningModule onLog={logToConsole} logs={getModuleLogs('provisioning')} />
               </ModulePane>
 
               <ModulePane id="config" activeModule={activeModule}>
@@ -114,36 +112,34 @@ export default function App() {
               </ModulePane>
 
               <ModulePane id="validation" activeModule={activeModule}>
-                <MalwareScannerModule onLog={logToConsole} />
-              </ModulePane>
-
-              <ModulePane id="terminal" activeModule={activeModule}>
-                <TerminalModule entries={logEntries} onClear={clearLogs} />
+                <MalwareScannerModule onLog={logToConsole} logs={getModuleLogs('validation')} />
               </ModulePane>
 
               <ModulePane id="sourcesync" activeModule={activeModule}>
-                <SourceSyncModule onLog={logToConsole} />
+                <SourceSyncModule onLog={logToConsole} logs={getModuleLogs('sourcesync')} />
               </ModulePane>
 
               <ModulePane id="security" activeModule={activeModule}>
-                <SecurityModule onLog={logToConsole} />
+                <SecurityModule onLog={logToConsole} logs={getModuleLogs('security')} />
               </ModulePane>
 
               <ModulePane id="cms" activeModule={activeModule}>
-                <CmsReconstructorModule onLog={logToConsole} />
+                <CmsReconstructorModule onLog={logToConsole} logs={getModuleLogs('cms')} />
+              </ModulePane>
+
+              <ModulePane id="rescuesorter" activeModule={activeModule}>
+                <RescueSorterModule logs={getModuleLogs('rescuesorter')} />
               </ModulePane>
 
             </div>
-          </Layout>
+          </MainLayout>
         </ToastProvider>
       </AppStateProvider>
     </ConfigProvider>
   );
 }
 
-// ── ModulePane ─────────────────────────────────────────────────────────────────
-// Wrapper que controla visibilidad. No usa conditional rendering ({condition && <C/>})
-// porque eso desmonota. Usa display:none que oculta sin desmontar.
+// ── ModulePane ────────────────────────────────────────────────────────────────
 interface ModulePaneProps {
   id: string;
   activeModule: string;
@@ -153,19 +149,7 @@ interface ModulePaneProps {
 function ModulePane({ id, activeModule, children }: ModulePaneProps) {
   const isActive = id === activeModule;
   return (
-    <div
-      role="tabpanel"
-      aria-label={id}
-      style={{
-        display: isActive ? 'flex' : 'none',
-        flexDirection: 'column',
-        flex: 1,
-        minHeight: 0,
-        // Transición de opacidad al volverse visible (no al ocultarse)
-        opacity: isActive ? 1 : 0,
-        transition: isActive ? 'opacity 0.15s ease-out' : 'none',
-      }}
-    >
+    <div className={isActive ? 'flex-1 flex flex-col min-h-0 overflow-hidden' : 'hidden'}>
       {children}
     </div>
   );

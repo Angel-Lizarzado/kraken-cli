@@ -7,7 +7,7 @@ function buildHardeningScript(ctx) {
   return `
 # A. Optimizacion de Memoria y Opcache
 echo -e "memory_limit = 512M\\nopcache.memory_consumption = 128\\nopcache.max_accelerated_files = 10000\\nopcache.validate_timestamps = 1" > /root/config_memoria_${ctx.domain}.ini
-plesk bin site --update-php-settings ${ctx.domain} -settings /root/config_memoria_${ctx.domain}.ini
+plesk bin php_settings -u ${ctx.domain} -settings memory_limit=512M,opcache.memory_consumption=128,opcache.max_accelerated_files=10000,opcache.validate_timestamps=1
 plesk bin domain --info ${ctx.domain} | grep php_handler_id | awk '{print $2}' | xargs -I{} systemctl reload {}
 rm -f /root/config_memoria_${ctx.domain}.ini
 
@@ -15,7 +15,7 @@ rm -f /root/config_memoria_${ctx.domain}.ini
 HT="${ctx.webRoot}/.htaccess"
 
 # 1. Bloquear directory listing
-grep -q "Options -Indexes" "$HT" || sed -i '1s/^/Options -Indexes\\n/' "$HT"
+grep -q "Options -Indexes" "$HT" || { echo "Options -Indexes" | cat - "$HT" > "$HT.tmp" && mv "$HT.tmp" "$HT"; }
 
 # 2. Bloquear wp-config.php
 if ! grep -q "wp-config.php" "$HT"; then

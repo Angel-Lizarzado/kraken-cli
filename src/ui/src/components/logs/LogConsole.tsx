@@ -30,10 +30,10 @@ class ReactWindowErrorBoundary extends React.Component<
     if (this.state.hasError) {
       return (
         <div className="flex items-center justify-center flex-col gap-2 px-4"
-          style={{ height: `${this.props.maxHeight}px`, color: 'var(--text-muted)', fontSize: '12px' }}>
+          style={{ height: `${this.props.maxHeight}px`, color: '#a5a5a5', fontSize: '12px' }}>
           <Terminal size={20} className="opacity-30" />
           <p>Error al renderizar la lista virtualizada</p>
-          <p className="font-mono text-[10px]" style={{ color: 'var(--color-error)', maxWidth: '400px', wordBreak: 'break-word' }}>
+          <p className="font-mono text-[10px]" style={{ color: '#ff5252', maxWidth: '400px', wordBreak: 'break-word' }}>
             {this.state.errorMessage}
           </p>
         </div>
@@ -103,23 +103,23 @@ const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix, onFilterDomai
         <span style={{ padding: '1px 6px', borderRadius: '3px', fontSize: '10px', lineHeight: '18px', backgroundColor: cfg.badgeBg, color: cfg.badgeText, minWidth: '48px' }} className="flex items-center gap-1 font-bold shrink-0">
           {cfg.icon}{cfg.label}
         </span>
-        <span className="font-mono shrink-0" style={{ fontSize: '11px', color: 'var(--text-muted)', width: '70px' }}>{time}</span>
+        <span className="font-mono shrink-0" style={{ fontSize: '11px', color: '#a5a5a5', width: '70px' }}>{time}</span>
         <span className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
           style={{ backgroundColor: modColor.bg, color: modColor.text, maxWidth: '90px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {entry.module}
         </span>
-        <span className="flex-1 truncate text-xs" style={{ color: 'var(--text-primary)' }}>{entry.message}</span>
+        <span className="flex-1 truncate text-xs" style={{ color: '#ffffff' }}>{entry.message}</span>
         {entry.fixable && (
           <button onClick={(e) => { e.stopPropagation(); onFix(entry); }}
             className="flex items-center gap-1 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
-            style={{ backgroundColor: 'oklch(0.45 0.15 35 / 0.2)', color: 'var(--color-error)', border: '1px solid oklch(0.45 0.15 35 / 0.3)' }}>
+            style={{ backgroundColor: 'oklch(0.45 0.15 35 / 0.2)', color: '#ff5252', border: '1px solid oklch(0.45 0.15 35 / 0.3)' }}>
             <Wrench size={10} />Fix
           </button>
         )}
         {entry.domain && (
           <span className="shrink-0 rounded px-1 py-0.5 text-[9px] font-mono cursor-pointer hover:opacity-80 transition-opacity"
             onClick={(e) => { e.stopPropagation(); onFilterDomain?.(entry.domain!); }}
-            style={{ backgroundColor: 'oklch(0.3 0.02 260 / 0.4)', color: 'var(--text-muted)' }}>
+            style={{ backgroundColor: 'oklch(0.3 0.02 260 / 0.4)', color: '#a5a5a5' }}>
             {entry.domain}
           </span>
         )}
@@ -132,7 +132,7 @@ const LogRow = ({ entry, style, isExpanded, onToggleExpand, onFix, onFilterDomai
             height: 'calc(100% - 28px)',
             overflowY: 'auto',
             backgroundColor: 'var(--bg-default, #111827)', 
-            color: 'var(--text-secondary)', 
+            color: '#d1d1d1', 
             borderBottom: '1px solid oklch(0.18 0.005 250)', 
             whiteSpace: 'pre-wrap', 
             wordBreak: 'break-word' 
@@ -198,14 +198,14 @@ function DomainGroupRow({ group, isOpen, onToggle }: DomainGroupRowProps) {
         style={{ backgroundColor: isOpen ? 'oklch(0.2 0.01 250 / 0.8)' : 'oklch(0.16 0.008 250)' }}
         onClick={() => onToggle(group.domain)}
       >
-        {isOpen ? <ChevronDown size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
-                : <ChevronRight size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />}
+        {isOpen ? <ChevronDown size={12} style={{ color: '#a5a5a5', flexShrink: 0 }} />
+                : <ChevronRight size={12} style={{ color: '#a5a5a5', flexShrink: 0 }} />}
 
         {/* Dot de estado */}
         <span style={{ width: 8, height: 8, borderRadius: '50%', backgroundColor: statusColor, flexShrink: 0, boxShadow: `0 0 4px ${statusColor}` }} />
 
         {/* Dominio */}
-        <span className="font-mono text-xs font-semibold flex-1 truncate" style={{ color: 'var(--text-primary)' }}>
+        <span className="font-mono text-xs font-semibold flex-1 truncate" style={{ color: '#ffffff' }}>
           {group.domain}
         </span>
 
@@ -216,7 +216,7 @@ function DomainGroupRow({ group, isOpen, onToggle }: DomainGroupRowProps) {
         </span>
 
         {/* Contador de logs */}
-        <span className="text-[10px] shrink-0" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-[10px] shrink-0" style={{ color: '#a5a5a5' }}>
           {group.entries.length} eventos
         </span>
       </div>
@@ -245,8 +245,8 @@ function DomainGroupRow({ group, isOpen, onToggle }: DomainGroupRowProps) {
                 className="flex items-start gap-2 px-4 py-1"
                 style={{ borderBottom: '1px solid oklch(0.15 0.005 250)', backgroundColor: cfg.rowBg, minHeight: '24px' }}>
                 <span style={{ fontSize: '10px', color: cfg.badgeText, flexShrink: 0, width: '36px' }}>{cfg.label}</span>
-                <span className="font-mono shrink-0" style={{ fontSize: '10px', color: 'var(--text-muted)', width: '64px' }}>{time}</span>
-                <span className="text-[11px]" style={{ color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                <span className="font-mono shrink-0" style={{ fontSize: '10px', color: '#a5a5a5', width: '64px' }}>{time}</span>
+                <span className="text-[11px]" style={{ color: '#d1d1d1', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                   {entry.message}
                 </span>
               </div>
@@ -360,7 +360,7 @@ export default function LogConsole({
         return (
           <div style={style}>
             <div className="flex items-start gap-2 px-3 py-1.5" style={{ minHeight: '28px', borderBottom: '1px solid oklch(0.18 0.005 250)' }}>
-              <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>—</span>
+              <span className="text-[10px]" style={{ color: '#a5a5a5' }}>—</span>
             </div>
           </div>
         );
@@ -382,15 +382,15 @@ export default function LogConsole({
 
   return (
     <div className="rounded-lg overflow-hidden"
-      style={{ border: '1px solid var(--border-default)', backgroundColor: 'oklch(0.14 0.005 250)' }}>
+      style={{ border: '1px solid rgba(255, 255, 255, 0.1)', backgroundColor: 'oklch(0.14 0.005 250)' }}>
 
       {/* Toolbar */}
       <div className="flex items-center justify-between px-3 py-2"
         style={{ backgroundColor: 'oklch(0.1 0.005 250)', borderBottom: '1px solid oklch(0.2 0.008 250)' }}>
         <div className="flex items-center gap-3">
-          <Terminal size={14} style={{ color: 'var(--text-muted)' }} />
-          <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>Consola</span>
-          <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{visibleEntries.length} eventos</span>
+          <Terminal size={14} style={{ color: '#a5a5a5' }} />
+          <span className="text-xs font-medium" style={{ color: '#a5a5a5' }}>Consola</span>
+          <span className="text-[10px]" style={{ color: '#a5a5a5' }}>{visibleEntries.length} eventos</span>
           {errorCount > 0 && <span className="text-[10px]" style={{ color: '#ef4444' }}>{errorCount} errores</span>}
           {warningCount > 0 && <span className="text-[10px]" style={{ color: '#eab308' }}>{warningCount} advertencias</span>}
         </div>
@@ -401,7 +401,7 @@ export default function LogConsole({
               className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 font-semibold"
               style={{
                 backgroundColor: 'oklch(0.45 0.18 25 / 0.15)',
-                color: 'var(--color-error)',
+                color: '#ff5252',
                 border: '1px solid oklch(0.45 0.18 25 / 0.3)',
               }}>
               <X size={10} /> Quitar Filtro ({filtroDominio})
@@ -414,7 +414,7 @@ export default function LogConsole({
             className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
             style={{
               backgroundColor: viewMode === 'domain' ? 'oklch(0.3 0.06 200 / 0.4)' : 'oklch(0.3 0.03 260 / 0.4)',
-              color: viewMode === 'domain' ? '#22d3ee' : 'var(--text-muted)',
+              color: viewMode === 'domain' ? '#22d3ee' : '#a5a5a5',
               border: '1px solid oklch(0.25 0.01 260 / 0.3)',
             }}
             title="Alternar entre vista plana y agrupada por dominio"
@@ -428,7 +428,7 @@ export default function LogConsole({
               className="text-[10px] px-2 py-0.5 rounded"
               style={{
                 backgroundColor: autoScroll ? 'oklch(0.3 0.03 260 / 0.4)' : 'transparent',
-                color: autoScroll ? 'var(--color-accent)' : 'var(--text-muted)',
+                color: autoScroll ? '#34ace0' : '#a5a5a5',
                 border: '1px solid oklch(0.25 0.01 260 / 0.3)',
               }}>
               Auto-scroll {autoScroll ? 'ON' : 'OFF'}
@@ -436,7 +436,7 @@ export default function LogConsole({
           )}
 
           <button onClick={onClear} className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
-            style={{ color: 'var(--text-muted)', border: '1px solid oklch(0.25 0.01 260 / 0.3)' }}>
+            style={{ color: '#a5a5a5', border: '1px solid oklch(0.25 0.01 260 / 0.3)' }}>
             <X size={10} />Limpiar
           </button>
         </div>
@@ -444,7 +444,7 @@ export default function LogConsole({
 
       {/* Cuerpo */}
       {visibleEntries.length === 0 ? (
-        <div className="flex items-center justify-center" style={{ height: `${maxHeight}px`, color: 'var(--text-muted)', fontSize: '12px' }}>
+        <div className="flex items-center justify-center" style={{ height: `${maxHeight}px`, color: '#a5a5a5', fontSize: '12px' }}>
           <div className="text-center">
             <Terminal size={24} className="mx-auto mb-2 opacity-30" />
             <p>{filtroDominio ? `No hay eventos para ${filtroDominio}` : 'Consola vacía. Los eventos aparecerán aquí durante la ejecución de módulos.'}</p>

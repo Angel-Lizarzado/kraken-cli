@@ -10,7 +10,7 @@ const { analizarYRecomendarAccion, resolverInstanceId } = require('./motor-diagn
  * @param {string}   dominio     - ej. "ejemplo.com"
  * @param {number}   ultimasLineas - cuántas líneas del log leer (default: 100)
  */
-async function diagnosticarSitio(ejecutarSSH, dominio, ultimasLineas = 50) {
+async function diagnosticarSitio(ejecutarSSH, dominio, ultimasLineas = 50, httpCode = null) {
   // Paso A: Leer las últimas N líneas del error_log del dominio
   // "tail -n" es eficiente: no carga todo el archivo en memoria
   const rutaLog = `/var/www/vhosts/${dominio}/logs/error_log`;
@@ -23,29 +23,22 @@ async function diagnosticarSitio(ejecutarSSH, dominio, ultimasLineas = 50) {
 
     // Si el log no existe, stderr contendrá "No such file or directory"
     if (!stdoutDelLog || stdoutDelLog.includes('No such file or directory')) {
-      return {
-        errorDetectado: false,
-        tipo: 'LOG_NO_ENCONTRADO',
-        descripcion: `No se encontró el archivo de log en ${rutaLog}`,
-        accionRecomendada: 'verificar_ruta_log',
-        comandoMitigacion: null,
-      };
+      stdoutDelLog = ''; // En vez de retornar aquí, permitimos evaluar por httpCode
     }
   } catch (errSSH) {
-    return {
-      errorDetectado: false,
-      tipo: 'ERROR_CONEXION_SSH',
-      descripcion: `Fallo al leer el log vía SSH: ${errSSH.message}`,
-      accionRecomendada: null,
-      comandoMitigacion: null,
-    };
+    stdoutDelLog = ''; // Falló log, pero igual evaluamos httpCode
   }
 
   // Paso B: Resolver el instanceId de Plesk para este dominio
-  const instanceId = await resolverInstanceId(ejecutarSSH, dominio);
+  let instanceId = null;
+  try {
+    instanceId = await resolverInstanceId(ejecutarSSH, dominio);
+  } catch (err) {
+    console.warn(`[Motor] No se pudo obtener el instanceId de ${dominio}: ${err.message}`);
+  }
 
   // Paso C: Ejecutar el motor de diagnóstico
-  const payload = await analizarYRecomendarAccion(stdoutDelLog, instanceId, dominio, ejecutarSSH);
+  const payload = await analizarYRecomendarAccion(stdoutDelLog, instanceId, dominio, ejecutarSSH, httpCode);
 
   return payload;
 }

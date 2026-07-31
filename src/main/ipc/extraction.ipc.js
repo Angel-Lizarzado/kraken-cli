@@ -238,6 +238,136 @@ function registerExtractionHandlers(ipcMain, mainWindow, scope) {
     }
   });
 
+  // ── Extracción Ultra-Lite (solo uploads + config.json + SQL crudo) ──
+  ipcMain.removeHandler('extraction:extract-ultra-lite');
+  ipcMain.handle('extraction:extract-ultra-lite', async (event, { accountName, cloudName, domains }) => {
+    if (isExtracting) return { success: false, error: 'Ya hay una extracción en progreso' };
+
+    isExtracting = true;
+    isOperationRunning.value = true;
+    const appState = getAppStateManager();
+    const progressEmitter = getProgressEmitter();
+    const workspaceManager = getWorkspaceManager();
+    await workspaceManager.initialize();
+    const extractionService = getExtractionService();
+
+    // RESET antes de correr — evita acumulación de resultados/logs de corridas anteriores
+    appState.resetModuleState('extraction');
+    appState.update('extraction', {
+      isRunning: true,
+      currentDomain: '',
+      currentProgress: 0,
+      currentMessage: 'Iniciando extracción Ultra-Lite...',
+      totalDomains: domains.length,
+      currentIndex: 0,
+      domainsQueue: domains,
+      batchAccountName: accountName,
+      batchCloudName: cloudName,
+      results: domains.map(d => ({ domain: d, status: 'pending', message: 'En cola...' })),
+    });
+
+    event.sender.send('extraction:state-changed', appState.getState('extraction'));
+    await new Promise(r => setTimeout(r, 150));
+
+    const batchResults = [];
+
+    // Helper para actualizar en tiempo real el estado de un dominio en el AppState e IPC
+    const updateDomainState = (domain, status, message) => {
+      const st = appState.getState('extraction');
+      if (st && Array.isArray(st.results)) {
+        const idx = st.results.findIndex(r => r.domain === domain);
+        if (idx >= 0) {
+          st.results[idx] = { domain, status, message };
+        } else {
+          st.results.push({ domain, status, message });
+        }
+        appState.update('extraction', { results: st.results });
+      }
+      event.sender.send('extraction:state-changed', appState.getState('extraction'));
+      event.sender.send('domain-process-result', { module: 'EXTRACT', domain, status, message });
+    };
+
+    try {
+      for (let i = 0; i < domains.length; i++) {
+        const domain = domains[i];
+        appState.update('extraction', { 
+          currentDomain: domain, 
+          currentIndex: i, 
+          currentProgress: Math.round((i / domains.length) * 100), 
+          currentMessage: `[ULTRA-LITE] Procesando: ${domain}` 
+        });
+
+        updateDomainState(domain, 'downloading', 'Iniciando...');
+
+        const taskId = progressEmitter.createTask('extraction', domain, `[ULTRA-LITE] Iniciando: ${domain}`);
+
+        const progressHandler = (progressData) => {
+          if (progressData.domain === domain) {
+            appState.update('extraction', {
+              currentProgress: progressData.progress ?? 0,
+              currentMessage: progressData.message || '',
+            });
+            sendExtractionLog(progressData.message || '', progressData.progress === 100 ? 'success' : 'info', domain);
+            updateDomainState(domain, 'downloading', progressData.message || 'Descargando...');
+          }
+        };
+
+        progressEmitter.on('progress', progressHandler);
+
+        try {
+          const result = await extractionService.extractWordPressUltraLite(accountName, cloudName, domain, taskId);
+          batchResults.push({ domain, success: true, result });
+
+          await workspaceManager.updateDominiosProcesados(accountName, cloudName, [{
+            dominio: domain,
+            extractionStatus: 'success',
+            errorReason: null,
+            lastExtractionRun: new Date().toISOString(),
+          }]);
+
+          sendExtractionLog(`[OK] ${domain}: Ultra-Lite completado`, 'success', domain);
+          updateDomainState(domain, 'success', 'Ultra-Lite completado');
+        } catch (error) {
+          console.error(`[ULTRA-LITE] Falló ${domain}:`, error.message);
+          EMIT.error(`[ULTRA-LITE] Falló ${domain}: ${error.message}`, domain);
+          batchResults.push({ domain, success: false, error: error.message });
+
+          try {
+            await workspaceManager.updateDominiosProcesados(accountName, cloudName, [{
+              dominio: domain,
+              extractionStatus: 'failed',
+              errorReason: error.message,
+              lastExtractionRun: new Date().toISOString(),
+            }]);
+          } catch (_) {}
+
+          sendExtractionLog(`[ERROR] ${domain}: ${error.message}`, 'error', domain);
+          updateDomainState(domain, 'error', error.message);
+        } finally {
+          progressEmitter.off('progress', progressHandler);
+        }
+
+        event.sender.send('extraction:state-changed', appState.getState('extraction'));
+      }
+
+      appState.update('extraction', { isRunning: false, currentDomain: '', currentProgress: 100, currentMessage: 'Ultra-Lite batch finalizado' });
+      sendExtractionLog('Extracción Ultra-Lite finalizada', 'success');
+      event.sender.send('extraction:state-changed', appState.getState('extraction'));
+
+      const successCount = batchResults.filter(r => r.success).length;
+      return { success: true, results: batchResults, total: batchResults.length, successCount, errors: batchResults.length - successCount };
+    } catch (error) {
+      console.error('[ERROR] Batch Ultra-Lite falló:', error.message);
+      EMIT.error(`Batch Ultra-Lite falló: ${error.message}`);
+      appState.update('extraction', { isRunning: false });
+      event.sender.send('extraction:state-changed', appState.getState('extraction'));
+      return { success: false, error: error.message };
+    } finally {
+      isExtracting = false;
+      isOperationRunning.value = false;
+    }
+  });
+
   // Extract-specific log helpers
   function sendExtractionLog(message, type = 'info', domain = '') {
     EMIT.emit(type, message, domain);

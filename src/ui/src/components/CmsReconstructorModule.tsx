@@ -12,7 +12,7 @@ interface DomainEntry {
   duration?: number;
 }
 
-type CmsMode = 'full' | 'core-only' | 'security-only';
+type CmsMode = 'full' | 'core-only' | 'security-only' | 'solo-plugin';
 
 interface WpVersion { version: string; estado: string; esUltima?: boolean; }
 
@@ -26,16 +26,19 @@ interface CmsProgress {
   total?: number;
 }
 
-interface Props { onLog: (msg: string, type?: LogLevel) => void }
+interface Props {
+  onLog: (msg: string, type?: LogLevel) => void;
+  logs?: { message: string; type: string; timestamp?: number; source?: string }[];
+}
 
 // ── Badge component ───────────────────────────────────────────────────────────
 
 function StatusBadge({ status }: { status: DomainEntry['status'] }) {
   const map = {
-    idle:    { label: 'Pendiente', color: 'var(--text-muted)',    bg: 'var(--surface-overlay)' },
+    idle:    { label: 'Pendiente', color: '#a5a5a5',    bg: 'rgba(255, 255, 255, 0.05)' },
     running: { label: '⟳ Procesando', color: '#f59e0b',         bg: 'oklch(0.55 0.15 75 / 0.15)' },
-    success: { label: '✓ OK',       color: 'var(--color-success)', bg: 'oklch(0.55 0.15 145 / 0.12)' },
-    error:   { label: '✗ Error',    color: 'var(--color-error)',   bg: 'oklch(0.45 0.12 25 / 0.12)' },
+    success: { label: '✓ OK',       color: '#33d9b2', bg: 'oklch(0.55 0.15 145 / 0.12)' },
+    error:   { label: '✗ Error',    color: '#ff5252',   bg: 'oklch(0.45 0.12 25 / 0.12)' },
   };
   const s = map[status];
   return (
@@ -58,12 +61,18 @@ export default function CmsReconstructorModule({ onLog }: Props) {
   const [targetPhpVersion, setTargetPhpVersion] = useState('Mantener actual');
   const [targetWpVersion, setTargetWpVersion]   = useState('');
   const [mode, setMode]               = useState<CmsMode>('full');
-  const [dryRun, setDryRun]           = useState(true);
-  const [phpSwitch, setPhpSwitch]     = useState(true);
+  const [dryRun, setDryRun]           = useState(false);
+  const [phpSwitch, setPhpSwitch]     = useState(false);
   const [servers, setServers]         = useState<string[]>([]);
   
+  // Audit Table State
+  const [auditPhase, setAuditPhase]   = useState<'idle' | 'auditing' | 'results'>('idle');
+  const [auditResults, setAuditResults] = useState<any[]>([]);
+  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
+  const [auditMsg, setAuditMsg]       = useState('');
+  
   // Versions
-  const [versionesWP, setVersionesWP] = useState<WpVersion[]>([]);
+  const [versionesPHP, setVersionesPHP] = useState<any[]>([]);
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
 
   // Runtime
@@ -78,6 +87,7 @@ export default function CmsReconstructorModule({ onLog }: Props) {
   const failed    = entries.filter(e => e.status === 'error').length;
   const running   = entries.filter(e => e.status === 'running').length;
   const total     = entries.length;
+  const visibleEntries = filterFailed ? entries.filter(e => e.status === 'error') : entries;
 
   // Hydrate servers list from config
   useEffect(() => {
@@ -108,26 +118,73 @@ export default function CmsReconstructorModule({ onLog }: Props) {
   // Hydrate versions when server changes
   useEffect(() => {
     if (!serverName) {
-      setVersionesWP([]);
+      setVersionesPHP([]);
       return;
     }
     setIsLoadingVersions(true);
-    (window as any).krakenAPI?.reconstructor?.obtenerVersiones(serverName)
+    api?.invoke('reconstructor:obtener-versiones', { serverName })
       .then((res: any) => {
-        if (res?.success && res.versiones) {
-          setVersionesWP(res.versiones.wp || []);
-          if (res.versiones.wp?.length > 0) setTargetWpVersion(res.versiones.wp[0].version);
+        if (res?.success && res.versiones?.php?.exito) {
+          setVersionesPHP(res.versiones.php.versiones || []);
+          if (res.versiones.php.versiones?.length > 0) {
+            setTargetPhpVersion(res.versiones.php.versiones[0].idCrudo);
+          }
         } else {
-          setVersionesWP([]);
+          setVersionesPHP([]);
         }
       })
       .catch(() => {
-        setVersionesWP([]);
+        setVersionesPHP([]);
       })
       .finally(() => {
         setIsLoadingVersions(false);
       });
   }, [serverName]);
+
+  // Fix 4.5: Prevenir duplicado de eventos de auditoría
+  const auditOwner = useRef(false);
+
+  // Audit Progress Listener
+  useEffect(() => {
+    const handler = (ev: any) => {
+      if (!auditOwner.current) return;
+      if (!ev) return;
+      if (ev.type === 'audit-start') { setAuditMsg(ev.msg || ''); return; }
+      if (ev.type === 'audit-domains-found') { setAuditMsg(ev.msg || ''); return; }
+      if (ev.type === 'domain-audited') {
+        if (ev.isWp !== false && ev.domain) {
+          setAuditResults(prev => {
+            const entry = {
+              domain: ev.domain,
+              wpVersion: ev.wpVersion,
+              pluginCount: ev.pluginCount,
+              phpHandler: ev.phpHandler,
+              error: ev.error,
+            };
+            const idx = prev.findIndex(r => r.domain === ev.domain);
+            if (idx >= 0) { const n = [...prev]; n[idx] = entry; return n; }
+            return [...prev, entry];
+          });
+        }
+        return;
+      }
+      if (ev.type === 'audit-done') {
+        setAuditPhase('results');
+        setAuditMsg(ev.msg || '');
+        if (ev.results) setAuditResults(ev.results.filter((r: any) => r.isWp));
+        auditOwner.current = false;
+        return;
+      }
+      if (ev.type === 'audit-error') { 
+        setAuditPhase('results'); 
+        setAuditMsg(`Error: ${ev.msg}`); 
+        auditOwner.current = false;
+        return; 
+      }
+    };
+    api?.receive('cms:audit-progress', handler);
+    return () => { api?.removeListener?.('cms:audit-progress', handler); };
+  }, []);
 
   // Fix 4: Prevenir duplicado de eventos cuando CmsAuditTab está activo.
   // Este módulo solo procesa eventos si FUE ÉL quien inició el batch.
@@ -222,8 +279,18 @@ export default function CmsReconstructorModule({ onLog }: Props) {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
+  const handleAudit = useCallback(async () => {
+    if (!serverName) return;
+    auditOwner.current = true;
+    setAuditPhase('auditing');
+    setAuditResults([]);
+    setSelectedDomains(new Set());
+    setAuditMsg('');
+    await api?.invoke('cms:audit-server', { serverName });
+  }, [serverName]);
+
   const handleStart = useCallback(async () => {
-    const domains = domainsRaw.split('\n').map(d => d.trim()).filter(Boolean);
+    const domains = [...selectedDomains];
     if (!domains.length) return;
     if (!serverName) return;
 
@@ -235,26 +302,39 @@ export default function CmsReconstructorModule({ onLog }: Props) {
 
     const res = await api?.invoke('cms:start-batch', {
       serverName, domains, localZipPath: localZipPath || null,
-      targetPhpVersion, targetWpVersion, mode, dryRun, phpSwitch,
+      targetPhpVersion, mode, dryRun, phpSwitch,
     });
     if (!res?.success) {
       batchOwner.current = false;
       setGlobalMsg(`Error: ${res?.error || 'No se pudo iniciar'}`);
       onLog(`[CMS] ${res?.error}`, 'error');
     }
-  }, [serverName, domainsRaw, localZipPath, targetPhpVersion, targetWpVersion, mode, dryRun, phpSwitch, onLog]);
+  }, [serverName, selectedDomains, localZipPath, targetPhpVersion, mode, dryRun, phpSwitch, onLog]);
 
   const handleAbort = useCallback(async () => {
     await api?.invoke('cms:abort');
     setIsRunning(false);
+    if (auditPhase === 'auditing') {
+      setAuditPhase('results');
+      setAuditMsg('⛔ Auditoría abortada por el usuario.');
+    }
   }, []);
 
   const handlePickZip = useCallback(async () => {
     const result = await api?.invoke('dialog:open-file', {
-      title: 'Seleccionar ZIP de Elementor Pro',
+      title: 'Seleccionar ZIP Plugin',
       filters: [{ name: 'ZIP', extensions: ['zip'] }],
     });
     if (result?.filePath) setLocalZipPath(result.filePath);
+  }, []);
+
+  const toggleDomain = useCallback((domain: string) => {
+    setOpenDomains(prev => {
+      const next = new Set(prev);
+      if (next.has(domain)) next.delete(domain);
+      else next.add(domain);
+      return next;
+    });
   }, []);
 
   const exportCsv = useCallback(() => {
@@ -263,237 +343,273 @@ export default function CmsReconstructorModule({ onLog }: Props) {
       rows.push([e.domain, e.status, ((e.duration || 0) / 1000).toFixed(1), e.error || ''].join(','));
     });
     const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement('a');
-    a.href = url; a.download = `cms-report-${Date.now()}.csv`; a.click();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `cms-reconstructor-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
     URL.revokeObjectURL(url);
   }, [entries]);
 
-  const toggleDomain = (domain: string) => {
-    setOpenDomains(prev => {
-      const n = new Set(prev);
-      n.has(domain) ? n.delete(domain) : n.add(domain);
-      return n;
-    });
-  };
-
-  const domains = domainsRaw.split('\n').map(d => d.trim()).filter(Boolean);
-  const visibleEntries = filterFailed ? entries.filter(e => e.status === 'error') : entries;
-
   return (
-    <div className="flex flex-col h-full overflow-hidden">
-      <div className="flex-1 overflow-y-auto p-6 space-y-5">
-
-        {/* ── Header ── */}
-        <div className="flex items-center justify-between">
+    <div className="flex flex-col h-full bg-background overflow-hidden">
+      
+      {/* ── Page Header ── */}
+      <div className="flex-none px-lg pt-lg pb-md">
+        <div className="flex flex-col md:flex-row md:items-end justify-between gap-md">
           <div>
-            <h1 className="font-display text-xl font-bold">CMS Reconstructor</h1>
-            <p className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              Reconstrucción industrial de WordPress — hasta 600 dominios
+            <h2 className="font-display-lg text-display-lg text-secondary mb-xs">CMS Reconstructor</h2>
+            <p className="font-body-md text-on-surface-variant max-w-2xl">
+              Reconstrucción industrial de WordPress — hasta 600 dominios. Modo Core, Seguridad o Full.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex gap-sm shrink-0">
             {entries.length > 0 && (
-              <button onClick={exportCsv} className="btn btn--ghost text-xs">
+              <button onClick={exportCsv} className="flex items-center gap-xs px-md py-sm font-label-caps text-label-caps bg-surface-container-highest text-on-surface-variant rounded border border-outline-variant hover:bg-surface-bright transition-all active:scale-95">
                 Exportar CSV
               </button>
             )}
-            {isRunning ? (
-              <button onClick={handleAbort} className="btn text-xs font-medium"
-                style={{ backgroundColor: 'var(--color-error)', color: '#fff' }}>
+            {isRunning || auditPhase === 'auditing' ? (
+              <button onClick={handleAbort} className="flex items-center gap-xs px-md py-sm font-title-sm bg-error/20 text-error hover:bg-error/30 rounded border border-error/50 transition-all active:scale-95">
                 ⛔ Abortar
               </button>
             ) : (
-              <button onClick={handleStart} disabled={!domains.length || !serverName || isLoadingVersions}
-                className="btn btn--primary text-xs font-medium">
-                {isLoadingVersions ? '⏳ Cargando...' : dryRun ? '🔍 Dry Run' : '🚀 Iniciar Batch'}
+              <button onClick={handleStart} disabled={!selectedDomains.size || !serverName || isLoadingVersions}
+                className={`flex items-center gap-xs px-md py-sm font-title-sm rounded transition-all active:scale-95 ${
+                  selectedDomains.size && serverName && !isLoadingVersions
+                    ? 'bg-secondary-container text-on-secondary-container hover:brightness-110'
+                    : 'bg-surface-container-highest text-outline cursor-not-allowed'
+                }`}>
+                {isLoadingVersions ? '⏳ Cargando...' : '🚀 Iniciar Reconstrucción'}
               </button>
             )}
           </div>
         </div>
+      </div>
 
-        {/* ── Progress dashboard (visible cuando hay entradas) ── */}
+      <div className="flex-1 overflow-y-auto px-lg pb-lg space-y-md">
+
+        {/* ── Progress Dashboard ── */}
         {entries.length > 0 && (
-          <div className="card p-4">
-            <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
-              {[
-                { label: 'Total',     value: total,     color: 'var(--text-primary)' },
-                { label: '✅ OK',     value: succeeded, color: 'var(--color-success)' },
-                { label: '❌ Error',  value: failed,    color: 'var(--color-error)' },
-                { label: '⟳ Activos',value: running,   color: '#f59e0b' },
-              ].map(s => (
-                <div key={s.label} className="text-center">
-                  <div className="text-2xl font-bold font-mono" style={{ color: s.color }}>{s.value}</div>
-                  <div className="text-xs mt-0.5" style={{ color: 'var(--text-muted)' }}>{s.label}</div>
-                </div>
-              ))}
+          <div className="bg-surface-container-low border border-outline-variant p-md">
+            <div className="grid grid-cols-4 gap-md text-center">
+              <div>
+                <div className="font-display text-2xl text-on-surface">{total}</div>
+                <div className="font-label-caps text-label-caps text-outline mt-xs">TOTAL</div>
+              </div>
+              <div>
+                <div className="font-display text-2xl text-green-400">{succeeded}</div>
+                <div className="font-label-caps text-label-caps text-outline mt-xs">OK</div>
+              </div>
+              <div>
+                <div className="font-display text-2xl text-error">{failed}</div>
+                <div className="font-label-caps text-label-caps text-outline mt-xs">ERROR</div>
+              </div>
+              <div>
+                <div className="font-display text-2xl text-secondary">{running}</div>
+                <div className="font-label-caps text-label-caps text-outline mt-xs">ACTIVOS</div>
+              </div>
             </div>
             {total > 0 && (
-              <div className="mt-3" style={{ height: 4, borderRadius: 2, backgroundColor: 'var(--surface-overlay)' }}>
-                <div style={{
-                  height: '100%', borderRadius: 2,
-                  width: `${((succeeded + failed) / total) * 100}%`,
-                  backgroundColor: failed > 0 ? 'var(--color-error)' : 'var(--color-success)',
-                  transition: 'width 400ms ease-out',
-                }} />
+              <div className="mt-md w-full bg-surface-container-highest h-1.5 rounded-full overflow-hidden">
+                <div className="h-full transition-all duration-500"
+                  style={{
+                    width: `${((succeeded + failed) / total) * 100}%`,
+                    backgroundColor: failed > 0 ? '#ff5252' : '#33d9b2',
+                  }} />
               </div>
             )}
             {globalMsg && (
-              <p className="text-xs mt-2 font-mono" style={{ color: 'var(--text-muted)' }}>{globalMsg}</p>
+              <p className="font-code-sm text-code-sm text-outline mt-sm text-center">{globalMsg}</p>
             )}
           </div>
         )}
 
-        <div className="grid gap-5" style={{ gridTemplateColumns: '340px 1fr' }}>
-          {/* ── Config panel ── */}
-          <div className="card p-4 space-y-4">
-            <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: 'var(--text-muted)' }}>
-              Configuración
-            </h2>
+        <div className="grid grid-cols-1 lg:grid-cols-[340px_1fr] gap-md">
+          {/* ── Config Panel ── */}
+          <div className="bg-surface-container-low border border-outline-variant p-md space-y-md h-fit">
+            <h2 className="font-label-caps text-label-caps text-outline uppercase">Configuración</h2>
 
             {/* Servidor */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Servidor</label>
+            <div className="space-y-xs">
+              <label className="font-label-caps text-label-caps text-outline">Servidor Plesk</label>
               <select value={serverName} onChange={e => setServerName(e.target.value)}
-                className="input text-xs w-full">
+                className="w-full bg-surface-container border border-outline-variant text-on-surface focus:border-secondary focus:ring-1 focus:ring-secondary font-body-md rounded px-sm py-sm">
                 <option value="">— Selecciona servidor —</option>
                 {servers.map(s => <option key={s} value={s}>{s}</option>)}
               </select>
             </div>
 
-            {/* Versión WP Destino */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium flex justify-between" style={{ color: 'var(--text-secondary)' }}>
-                <span>Versión WordPress</span>
-                {isLoadingVersions && <span className="animate-pulse" style={{ color: 'var(--color-accent)' }}>Cargando...</span>}
+            {/* Versión PHP Destino */}
+            <div className="space-y-xs">
+              <label className="font-label-caps text-label-caps text-outline flex justify-between">
+                <span>Versión PHP Destino</span>
+                {isLoadingVersions && <span className="animate-pulse text-secondary">Cargando...</span>}
               </label>
-              <select value={targetWpVersion} onChange={e => setTargetWpVersion(e.target.value)}
-                className="input text-xs w-full" disabled={isLoadingVersions || versionesWP.length === 0}>
-                {versionesWP.length === 0 ? (
-                  <option value="">— No disponible —</option>
+              <select value={targetPhpVersion} onChange={e => setTargetPhpVersion(e.target.value)}
+                className="w-full bg-surface-container border border-outline-variant text-on-surface focus:border-secondary focus:ring-1 focus:ring-secondary font-body-md rounded px-sm py-sm disabled:opacity-50"
+                disabled={isLoadingVersions || versionesPHP.length === 0}>
+                {versionesPHP.length === 0 ? (
+                  <option value="Mantener actual">Mantener actual</option>
                 ) : (
-                  versionesWP.map(v => {
-                    const label = `${v.version} (${v.esUltima ? 'Última / ' : ''}${v.estado.charAt(0).toUpperCase() + v.estado.slice(1)})`;
-                    return <option key={v.version} value={v.version}>{label}</option>;
-                  })
+                  <>
+                    <option value="Mantener actual">Mantener actual</option>
+                    {versionesPHP.map(v => (
+                      <option key={v.idCrudo} value={v.idCrudo}>
+                        {v.version} — {v.etiquetaCompleta}
+                      </option>
+                    ))}
+                  </>
                 )}
               </select>
             </div>
 
-            {/* Versión PHP Destino */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium flex justify-between" style={{ color: 'var(--text-secondary)' }}>
-                <span>Versión PHP Destino</span>
-              </label>
-              <select value={targetPhpVersion} onChange={e => setTargetPhpVersion(e.target.value)}
-                className="input text-xs w-full" disabled={isLoadingVersions}>
-                {['Mantener actual', '8.1', '8.2', '8.3'].map(v => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
-            </div>
-
             {/* Modo */}
-            <div className="space-y-1">
-              <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>Modo</label>
-              <div className="grid gap-1" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-                {(['full', 'core-only', 'security-only'] as CmsMode[]).map(m => (
+            <div className="space-y-xs">
+              <label className="font-label-caps text-label-caps text-outline">Modo</label>
+              <div className="grid grid-cols-2 gap-sm">
+                {(['full', 'core-only', 'security-only', 'solo-plugin'] as CmsMode[]).map(m => (
                   <button key={m} onClick={() => setMode(m)}
-                    className="text-[10px] px-2 py-1.5 rounded-md transition-all"
-                    style={{
-                      backgroundColor: mode === m ? 'var(--color-accent-bg)' : 'var(--surface-overlay)',
-                      color: mode === m ? 'var(--color-accent)' : 'var(--text-muted)',
-                      border: `1px solid ${mode === m ? 'var(--color-accent)' : 'var(--border-default)'}`,
-                    }}>
-                    {m === 'full' ? 'Full' : m === 'core-only' ? 'Solo Core' : 'Solo Seguridad'}
+                    className={`font-label-caps text-[10px] px-sm py-sm rounded border transition-all ${
+                      mode === m
+                        ? 'bg-secondary-container/20 text-secondary border-secondary/50'
+                        : 'bg-surface-container text-outline border-outline-variant hover:border-outline'
+                    }`}>
+                    {m === 'full' ? 'Full' : m === 'core-only' ? 'Solo Core' : m === 'security-only' ? 'Seguridad' : 'Plugin'}
                   </button>
                 ))}
               </div>
             </div>
 
-            {/* ZIP Elementor */}
-            {mode === 'full' && (
-              <div className="space-y-1">
-                <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                  ZIP Elementor Pro
-                </label>
-                <div className="flex gap-1.5">
+            {/* ZIP Plugin */}
+            {(mode === 'full' || mode === 'solo-plugin') && (
+              <div className="space-y-xs">
+                <label className="font-label-caps text-label-caps text-outline">ZIP Plugin</label>
+                <div className="flex gap-sm">
                   <input type="text" value={localZipPath} onChange={e => setLocalZipPath(e.target.value)}
-                    placeholder="Ruta local del .zip" className="input text-[10px] flex-1 font-mono" readOnly />
-                  <button onClick={handlePickZip} className="btn btn--ghost text-xs px-2">
-                    📂
+                    placeholder="Ruta local del .zip" className="w-full bg-surface-container border border-outline-variant text-on-surface font-code-sm px-sm py-sm rounded" readOnly />
+                  <button onClick={handlePickZip} className="px-sm py-sm bg-surface-container-highest border border-outline-variant rounded hover:bg-surface-bright transition-colors text-on-surface-variant">
+                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" /></svg>
                   </button>
                 </div>
               </div>
             )}
-
-            {/* Opciones */}
-            <div className="space-y-2 pt-1 border-t" style={{ borderColor: 'var(--border-default)' }}>
-              {[
-                { label: 'Dry Run (sin cambios reales)', value: dryRun, set: setDryRun },
-                { label: 'PHP Switcher automático', value: phpSwitch, set: setPhpSwitch },
-              ].map(opt => (
-                <label key={opt.label} className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={opt.value} onChange={e => opt.set(e.target.checked)}
-                    className="accent-[var(--color-accent)]" />
-                  <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>{opt.label}</span>
-                </label>
-              ))}
-            </div>
           </div>
 
-          {/* ── Domains textarea ── */}
-          <div className="card p-4 space-y-2 flex flex-col">
-            <div className="flex items-center justify-between">
-              <label className="text-xs font-medium" style={{ color: 'var(--text-secondary)' }}>
-                Dominios ({domains.length})
-              </label>
+          {/* ── Domains Table / Audit ── */}
+          <div className="bg-surface-container-low border border-outline-variant flex flex-col min-h-[300px]">
+            <div className="bg-surface-container-high px-md py-sm flex items-center justify-between border-b border-outline-variant shrink-0">
+              <span className="font-label-caps text-label-caps text-on-surface">
+                Dominios WP: {auditResults.length} / Sel: {selectedDomains.size}
+              </span>
+              <button onClick={handleAudit} disabled={!serverName || auditPhase === 'auditing'}
+                className="flex items-center gap-xs px-sm py-1 font-label-caps text-label-caps bg-surface-container-highest text-on-surface-variant rounded border border-outline-variant hover:bg-surface-bright transition-all disabled:opacity-50">
+                {auditPhase === 'auditing' ? '⏳ Auditando...' : '🔍 Auditar Servidor'}
+              </button>
             </div>
-            <textarea value={domainsRaw} onChange={e => setDomainsRaw(e.target.value)}
-              placeholder={"dominio1.com\ndominio2.com\ndominio3.com"}
-              className="input flex-1 text-xs font-mono resize-none"
-              style={{ minHeight: 200 }} disabled={isRunning} />
+            
+            <div className="flex-1 overflow-auto">
+              <table className="w-full border-collapse">
+                <thead className="sticky top-0 bg-surface-container-low border-b border-outline-variant">
+                  <tr className="text-left">
+                    <th className="px-md py-sm w-12">
+                      <input type="checkbox"
+                        className="accent-secondary"
+                        checked={auditResults.length > 0 && selectedDomains.size === auditResults.length}
+                        onChange={() => {
+                          if (selectedDomains.size === auditResults.length) setSelectedDomains(new Set());
+                          else setSelectedDomains(new Set(auditResults.map(r => r.domain)));
+                        }} />
+                    </th>
+                    <th className="px-md py-sm font-label-caps text-label-caps text-outline uppercase">Dominio</th>
+                    <th className="px-md py-sm font-label-caps text-label-caps text-outline uppercase">WP Ver.</th>
+                    <th className="px-md py-sm font-label-caps text-label-caps text-outline uppercase">Plugins</th>
+                    <th className="px-md py-sm font-label-caps text-label-caps text-outline uppercase">PHP</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-outline-variant/30">
+                  {auditResults.map(row => (
+                    <tr key={row.domain}
+                      onClick={() => {
+                        const n = new Set(selectedDomains);
+                        n.has(row.domain) ? n.delete(row.domain) : n.add(row.domain);
+                        setSelectedDomains(n);
+                      }}
+                      className={`hover:bg-surface-container-high transition-colors cursor-pointer ${
+                        selectedDomains.has(row.domain) ? 'bg-secondary-container/5' : ''
+                      }`}>
+                      <td className="px-md py-sm">
+                        <input type="checkbox" className="accent-secondary" checked={selectedDomains.has(row.domain)} readOnly />
+                      </td>
+                      <td className="px-md py-sm font-code-md text-code-md text-on-surface">
+                        {row.domain}
+                      </td>
+                      <td className="px-md py-sm font-code-sm text-code-sm text-on-surface-variant">
+                        {row.wpVersion || '?'}
+                      </td>
+                      <td className="px-md py-sm font-code-sm text-code-sm text-on-surface-variant">
+                        {row.pluginCount ?? '?'}
+                      </td>
+                      <td className="px-md py-sm font-code-sm text-code-sm text-outline">
+                        {row.phpHandler ? row.phpHandler.replace(/.*plesk-php|\/php.*/, '').trim() : '?'}
+                      </td>
+                    </tr>
+                  ))}
+                  {auditResults.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-md py-xl text-center text-on-surface-variant font-body-sm">
+                        {auditPhase === 'idle' ? 'Haz clic en Auditar Servidor para cargar dominios de Plesk' : 'Sin dominios compatibles'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {auditMsg && (
+              <div className="bg-surface-container-lowest border-t border-outline-variant px-md py-sm">
+                <p className="font-code-sm text-code-sm text-outline truncate">{auditMsg}</p>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* ── Terminal Accordion ── */}
+        {/* ── Terminal Accordion (Per Domain Logs) ── */}
         {entries.length > 0 && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-sm font-semibold">Progreso por dominio</h2>
-              <label className="flex items-center gap-2 cursor-pointer">
+          <div className="bg-surface-container-low border border-outline-variant flex flex-col">
+            <div className="bg-surface-container-high px-md py-sm flex items-center justify-between border-b border-outline-variant shrink-0">
+              <span className="font-title-sm text-on-surface">Progreso por dominio</span>
+              <label className="flex items-center gap-sm cursor-pointer">
                 <input type="checkbox" checked={filterFailed} onChange={e => setFilterFailed(e.target.checked)}
-                  className="accent-[var(--color-accent)]" />
-                <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
+                  className="accent-secondary" />
+                <span className="font-label-caps text-label-caps text-outline">
                   Ver solo fallidos ({failed})
                 </span>
               </label>
             </div>
-
-            <div className="space-y-1.5">
+            
+            <div className="divide-y divide-outline-variant/30">
               {visibleEntries.map(entry => (
-                <div key={entry.domain} className="card overflow-hidden">
+                <div key={entry.domain} className="bg-surface-container-lowest">
                   {/* Accordion header */}
                   <button
                     onClick={() => toggleDomain(entry.domain)}
-                    className="w-full flex items-center gap-3 px-4 py-3 text-left"
-                    style={{ backgroundColor: 'transparent' }}
+                    className="w-full flex items-center gap-md px-md py-sm text-left hover:bg-surface-container-high transition-colors"
                   >
                     <StatusBadge status={entry.status} />
-                    <span className="text-xs font-mono flex-1" style={{ color: 'var(--text-primary)' }}>
+                    <span className="font-code-md text-code-md text-on-surface flex-1">
                       {entry.domain}
                     </span>
                     {entry.duration && (
-                      <span className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
+                      <span className="font-code-sm text-code-sm text-outline">
                         {(entry.duration / 1000).toFixed(1)}s
                       </span>
                     )}
-                    <span style={{ color: 'var(--text-muted)', fontSize: 10 }}>
+                    <span className="text-outline text-[10px]">
                       {openDomains.has(entry.domain) ? '▲' : '▼'}
                     </span>
                   </button>
 
-                  {/* Accordion body */}
+                  {/* Accordion body (Terminal for this domain) */}
                   <AnimatePresence initial={false}>
                     {openDomains.has(entry.domain) && (
                       <motion.div
@@ -501,30 +617,25 @@ export default function CmsReconstructorModule({ onLog }: Props) {
                         animate={{ height: 'auto', opacity: 1 }}
                         exit={{ height: 0, opacity: 0 }}
                         transition={{ duration: 0.15 }}
-                        style={{ overflow: 'hidden' }}
+                        className="overflow-hidden"
                       >
-                        <div className="border-t px-4 py-3 space-y-0.5"
-                          style={{ borderColor: 'var(--border-default)', maxHeight: 240, overflowY: 'auto' }}>
+                        <div className="bg-black border-t border-outline-variant/50 p-md font-code-sm text-code-sm overflow-y-auto max-h-60 space-y-[2px] scanline-effect">
                           {entry.steps.length === 0 ? (
-                            <p className="text-[10px] font-mono" style={{ color: 'var(--text-muted)' }}>
-                              Esperando inicio...
-                            </p>
+                            <p className="text-outline italic">Esperando inicio...</p>
                           ) : entry.steps.map((step, i) => {
-                            const color = step.level === 'error' ? 'var(--color-error)'
-                              : step.level === 'success' ? 'var(--color-success)'
-                              : step.level === 'warn' ? 'var(--color-warning)'
-                              : 'var(--text-secondary)';
+                            const colorClass = 
+                              step.level === 'error' ? 'text-error' :
+                              step.level === 'success' ? 'text-green-400' :
+                              step.level === 'warn' ? 'text-tertiary' :
+                              'text-on-surface-variant';
                             return (
-                              <p key={i} className="text-[10px] font-mono leading-relaxed"
-                                style={{ color, wordBreak: 'break-all' }}>
+                              <p key={i} className={`leading-relaxed break-all ${colorClass}`}>
                                 {step.msg}
                               </p>
                             );
                           })}
                           {entry.status === 'running' && (
-                            <p className="text-[10px] font-mono animate-pulse" style={{ color: '#f59e0b' }}>
-                              ▌ Procesando...
-                            </p>
+                            <p className="text-secondary animate-pulse mt-sm">▌ Procesando...</p>
                           )}
                         </div>
                       </motion.div>

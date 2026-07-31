@@ -72,6 +72,10 @@ function registerWorkspaceHandlers(ipcMain, mainWindow) {
       // 2. Integrate discoveries into config
       const config = configManager.getConfig() || { sshKeys: {}, accounts: [], cloudflare: { apiToken: '', zoneId: '' }, workspaceRoot: '' };
 
+      // Limpiar cuentas huérfanas (que ya no existen en disco)
+      const discoveredAccountNames = (result.accounts || []).map(a => a.name);
+      config.accounts = config.accounts.filter(a => discoveredAccountNames.includes(a.name));
+
       for (const discoveredAccount of result.accounts || []) {
         let configAccount = config.accounts.find(a => a.name === discoveredAccount.name);
 
@@ -82,6 +86,10 @@ function registerWorkspaceHandlers(ipcMain, mainWindow) {
           };
           config.accounts.push(configAccount);
         }
+
+        // Limpiar clouds huérfanos dentro de la cuenta
+        const discoveredCloudNames = (discoveredAccount.clouds || []).map(c => c.name);
+        configAccount.originClouds = configAccount.originClouds.filter(c => discoveredCloudNames.includes(c.name));
 
         for (const discoveredCloud of discoveredAccount.clouds || []) {
           const exists = configAccount.originClouds.some(c => c.name === discoveredCloud.name);

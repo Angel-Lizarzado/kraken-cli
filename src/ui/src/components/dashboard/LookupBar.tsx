@@ -52,7 +52,7 @@ export default function LookupBar({ onLookup }: LookupBarProps) {
           onChange={e => { setDomain(e.target.value); handleClear(); }}
           onKeyDown={e => { if (e.key === 'Enter') handleLookup(); }}
           placeholder="Verificar dominio (ej. abogada.es)..."
-          className="input text-sm"
+          className="w-full bg-surface-container-low border border-outline-variant rounded px-3 py-1.5 text-sm text-on-surface focus:outline-none focus:border-tertiary focus:ring-1 focus:ring-tertiary transition-all"
           style={{
             flex: '1 1 auto',
             minWidth: '120px',
@@ -67,12 +67,8 @@ export default function LookupBar({ onLookup }: LookupBarProps) {
             opacity: result || error ? 1 : 0,
             overflow: 'hidden',
             transition: 'flex 0.3s ease, max-width 0.3s ease, opacity 0.25s ease',
-            backgroundColor: error
-              ? 'var(--color-danger-bg, rgba(239,68,68,0.15))'
-              : 'var(--color-success-bg, rgba(34,197,94,0.15))',
-            color: error
-              ? 'var(--color-danger, #ef4444)'
-              : 'var(--color-success, #22c55e)',
+            backgroundColor: error ? 'rgba(239,68,68,0.15)' : 'rgba(34,197,94,0.15)',
+            color: error ? '#ef4444' : '#22c55e',
           }}
         >
           {error
@@ -86,7 +82,7 @@ export default function LookupBar({ onLookup }: LookupBarProps) {
       <button
         onClick={handleLookup}
         disabled={loading || !domain.trim()}
-        className="btn btn--secondary text-xs"
+        className="px-3 py-1.5 bg-surface-container border border-outline-variant text-on-surface rounded font-title-sm text-xs hover:bg-surface-container-high transition-all active:scale-95 disabled:opacity-50"
         style={{ minWidth: '80px', flexShrink: 0 }}
       >
         {loading ? (

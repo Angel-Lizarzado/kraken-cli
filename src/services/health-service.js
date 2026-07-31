@@ -127,7 +127,7 @@ function checkDomain(domain) {
             code: null,
             message: `DNS: ${errCode}`,
             time: elapsed,
-            speed: 'timeout',
+            speed: 'critical',
           });
           return;
         }

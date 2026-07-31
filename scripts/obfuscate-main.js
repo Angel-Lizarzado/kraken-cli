@@ -34,6 +34,7 @@ const SRC_DIRS = [
   'src/electron',
   'src/main',
   'src/services',
+  'src/infrastructure',
 ];
 
 // ── Configuración del ofuscador ────────────────────────────────────────────────

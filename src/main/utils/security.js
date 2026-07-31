@@ -12,6 +12,14 @@ const FILE_NAME = 'kraken-cli-license.json';
 
 const verifyKillSwitch = () => {
   return new Promise((resolve, reject) => {
+    // [TEMPORALMENTE DESHABILITADO POR SOLICITUD DEL USUARIO]
+    // La lógica de verificación contra el Gist se ha comentado para
+    // que la aplicación funcione libremente sin requerir conexión o licencia.
+    
+    console.log('[SECURITY] Licencia verificada (Modo libre/offline temporal).');
+    resolve(true);
+
+    /* --- LÓGICA ORIGINAL DEL GIST COMENTADA PARA FUTURO USO ---
     const apiPath = `/gists/${GIST_ID}`;
     console.log('[SECURITY] Consultando API de Gist para licencia...');
 
@@ -68,6 +76,7 @@ const verifyKillSwitch = () => {
       console.error('[SECURITY] Timeout de conexión');
       reject(new Error("[SECURITY] Error de conexión con el servidor de licencias. Verifique su internet o contacte a soporte."));
     });
+    ---------------------------------------------------------- */
   });
 };
 

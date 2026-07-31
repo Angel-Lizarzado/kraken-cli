@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useIpc } from '../hooks/useIpc';
 import { useToast } from './Toast';
+import { RefreshCw, TriangleAlert, Webhook, CloudUpload, ShieldAlert, Key, Award, FileArchive, Mail } from 'lucide-react';
 
 interface ScanResult {
   workspaceRoot: string;
@@ -41,9 +42,20 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
   const [savingMasterPassword, setSavingMasterPassword] = useState(false);
   const [generatingKey, setGeneratingKey] = useState(false);
   const [workspacePath, setWorkspacePath] = useState<string>('');
+  const [driveConfig, setDriveConfig] = useState({ credentialsPath: '', rootFolderId: '' });
+  const [selectedSyncTarget, setSelectedSyncTarget] = useState<string>('ALL');
+  const [driveLogs, setDriveLogs] = useState<{msg: string, type: string, time: number}[]>([]);
   const [respaldosPath, setRespaldosPath] = useState<string>('');
   const [changingFolder, setChangingFolder] = useState(false);
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const [autoScroll, setAutoScroll] = useState(true);
   const loadedRef = useRef(false);
+  
+  const [isOAuthAuthenticated, setIsOAuthAuthenticated] = useState(false);
+  const [isAuthenticating, setIsAuthenticating] = useState(false);
+  const [hostingerMailToken, setHostingerMailToken] = useState('');
+  const [hostingerMailTokenDisplay, setHostingerMailTokenDisplay] = useState('');
+  const [savingMailToken, setSavingMailToken] = useState(false);
 
 
   const handleScan = useCallback(async () => {
@@ -108,19 +120,73 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
           if (accountIdResult?.success) {
             setCfAccountIdInput(accountIdResult.accountId || '');
           }
+          
+          // Cargar Drive config
+          const dConf = await api.invoke('config:get-google-drive');
+          if (dConf?.success && dConf.googleDrive) {
+            setDriveConfig(dConf.googleDrive);
+          }
+
+          // Cargar Email (Hostinger Mail) token
+          const emailConf = await api.invoke('email:get-config');
+          if (emailConf?.success) {
+            setHostingerMailTokenDisplay(emailConf.obfuscated || '');
+          }
         }
       } catch { /* silencioso */ }
       // Cargar workspace path actual
       try {
-        const wpResult = await api.invoke('workspace:get-path');
-        if (wpResult?.success) {
-          setWorkspacePath(wpResult.workspacePath || '');
-          setRespaldosPath(wpResult.respaldosPath || '');
+        const wp = await api.invoke('workspace:get-path');
+        if (wp?.success) {
+          setWorkspacePath(wp.path || '');
         }
       } catch { /* silencioso */ }
     })();
   }, [getCloudflareToken]);
 
+  useEffect(() => {
+    // Listen to Drive Sync Logs
+    let cleanupDriveLog: () => void;
+    let cleanupSyncComplete: () => void;
+    const api = (window as any).api;
+    try {
+      if (api.receive) {
+        cleanupDriveLog = api.receive('drive:log', (data: any) => {
+          setDriveLogs(prev => {
+            const next = [...prev, { msg: data.msg, type: data.type || 'info', time: Date.now() }];
+            return next.length > 200 ? next.slice(next.length - 200) : next;
+          });
+        });
+        
+        cleanupSyncComplete = api.receive('drive:sync-complete', (data: any) => {
+          setIsDriveSyncing(false);
+          if (!data?.success) {
+            setDriveLogs(prev => [...prev, { msg: `Sync Failed: ${data?.error || 'Unknown error'}`, type: 'error', time: Date.now() }]);
+          } else {
+            setDriveLogs(prev => [...prev, { msg: `Sincronización finalizada exitosamente.`, type: 'success', time: Date.now() }]);
+          }
+        });
+      }
+    } catch (err) { console.error('Error attaching drive IPC listeners:', err); }
+
+    return () => {
+      if (cleanupDriveLog) cleanupDriveLog();
+      if (cleanupSyncComplete) cleanupSyncComplete();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (terminalRef.current && autoScroll) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [driveLogs.length, autoScroll]);
+
+  const handleTerminalScroll = () => {
+    if (!terminalRef.current) return;
+    const { scrollTop, scrollHeight, clientHeight } = terminalRef.current;
+    const isBottom = scrollHeight - scrollTop - clientHeight < 20;
+    setAutoScroll(isBottom);
+  };
 
   const handleSaveCfToken = useCallback(async () => {
     const trimmed = cfTokenInput.trim();
@@ -230,25 +296,32 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
     const api = (window as any).api;
     const trimmed = masterPasswordInput.trim();
     if (!trimmed) {
+      toast.error('La contraseña no puede estar vacía.');
       onLog('No se puede guardar una contraseña vacía.', 'warning', 'config');
+      return;
+    }
+    if (!api) {
+      toast.error('API no disponible. Reinicia la aplicación.');
+      onLog('Error: API bridge no disponible.', 'error', 'config');
       return;
     }
     setSavingMasterPassword(true);
     try {
-      const result = await api?.invoke('correo:contrasena:guardar', { password: trimmed });
+      const result = await api.invoke('correo:contrasena:guardar', { password: trimmed });
       if (result?.exito) {
         setHasMasterPassword(true);
         setMasterPasswordInput('');
         toast.success('Contraseña Maestra guardada correctamente.');
         onLog('[CONFIG] Contraseña Maestra de Correos actualizada.', 'success', 'config');
       } else {
-        const errMsg = result?.error || 'Error desconocido';
+        const errMsg = result?.error || 'Respuesta inesperada del servidor.';
         onLog(`Error al guardar Contraseña Maestra: ${errMsg}`, 'error', 'config');
-        toast.error(errMsg);
+        toast.error(`Error: ${errMsg}`);
       }
     } catch (err: any) {
-      onLog(`Error al guardar Contraseña Maestra: ${err?.message}`, 'error', 'config');
-      toast.error(err?.message || 'Error inesperado');
+      const errMsg = err?.message || 'Error inesperado';
+      onLog(`Error al guardar Contraseña Maestra: ${errMsg}`, 'error', 'config');
+      toast.error(errMsg);
     } finally {
       setSavingMasterPassword(false);
     }
@@ -332,429 +405,514 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
   const serverCount = config?.destinationServers?.length || 0;
   const cloudCount = config?.accounts?.reduce((t: number, a: any) => t + (a.originClouds?.length || 0), 0) || 0;
 
+
+  const [epZipPath, setEpZipPath] = useState<string>('');
+  const [epLicenseDisplay, setEpLicenseDisplay] = useState<string>('');
+  const [epLicenseKey, setEpLicenseKey] = useState<string>('');
+  const [savingEp, setSavingEp] = useState<boolean>(false);
+  const [isDriveSyncing, setIsDriveSyncing] = useState<boolean>(false);
+
+  const handleSelectEpZip = useCallback(() => {
+    toast.info('Selección de Elementor Pro aún no implementada.');
+  }, [toast]);
+
+  const handleSaveEpLicense = useCallback(() => {
+    toast.info('Guardado de licencia de Elementor Pro aún no implementado.');
+  }, [toast]);
+
+  const handleSyncDriveConfig = useCallback(async () => {
+    const api = (window as any).api;
+    if (!driveConfig.credentialsPath || !driveConfig.rootFolderId) {
+      toast.error('Configura las credenciales y el Root Folder ID primero.');
+      return;
+    }
+    setIsDriveSyncing(true);
+    try {
+      if (selectedSyncTarget === 'ALL') {
+        await api.invoke('drive:start-sync', {});
+        toast.success('Sincronización masiva iniciada en segundo plano.');
+      } else {
+        const [accName, cName] = selectedSyncTarget.split('|');
+        await api.invoke('drive:start-sync', { accountName: accName, cloudName: cName });
+        toast.success(`Sincronización iniciada para ${cName}.`);
+      }
+    } catch (err: any) {
+      toast.error(`Error iniciando sync: ${err.message}`);
+      setIsDriveSyncing(false);
+    }
+  }, [driveConfig, selectedSyncTarget, toast]);
+
+  useEffect(() => {
+    const api = (window as any).api;
+    if (driveConfig.credentialsPath) {
+      api.invoke('drive:check-auth', driveConfig.credentialsPath).then((res: any) => {
+        if (res?.success) setIsOAuthAuthenticated(res.authenticated);
+      });
+    } else {
+      setIsOAuthAuthenticated(false);
+    }
+  }, [driveConfig.credentialsPath]);
+
+  const handleOAuthLogin = useCallback(async () => {
+    const api = (window as any).api;
+    setIsAuthenticating(true);
+    try {
+      const res = await api.invoke('drive:start-auth', driveConfig.credentialsPath);
+      if (res?.success) {
+        setIsOAuthAuthenticated(true);
+        toast.success('Autenticación exitosa.');
+      } else {
+        toast.error(`Error: ${res?.error}`);
+      }
+    } catch (e: any) {
+      toast.error('Error durante el login OAuth');
+    } finally {
+      setIsAuthenticating(false);
+    }
+  }, [driveConfig.credentialsPath, toast]);
+
+  const handleOAuthLogout = useCallback(async () => {
+    const api = (window as any).api;
+    try {
+      await api.invoke('drive:logout', driveConfig.credentialsPath);
+      setIsOAuthAuthenticated(false);
+      toast.success('Sesión cerrada.');
+    } catch (e: any) {
+      toast.error('Error al cerrar sesión');
+    }
+  }, [toast]);
+
+  const handleSelectCredentials = useCallback(async () => {
+    const api = (window as any).api;
+    try {
+      const res = await api.invoke('config:select-drive-credentials', {});
+      if (res.success && res.path) {
+        setDriveConfig(prev => ({ ...prev, credentialsPath: res.path }));
+        toast.success('Credenciales guardadas.');
+      }
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  }, [toast]);
+
+  const handleSaveDriveRoot = useCallback(async (val: string) => {
+    const api = (window as any).api;
+    try {
+      await api.invoke('config:set-drive-root', { rootFolderId: val });
+      setDriveConfig(prev => ({ ...prev, rootFolderId: val }));
+      toast.success('Root Folder ID guardado.');
+    } catch (err: any) {
+      toast.error(err.message);
+    }
+  }, [toast]);
+
+  const handleChangeRespaldos = useCallback(async () => {
+    toast.info('Cambio de carpeta de respaldos a implementar en breve.');
+  }, [toast]);
+
+
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-xl font-bold">Configuración</h1>
-          <p className="text-sm" style={{ color: 'var(--text-muted)' }}>
-            Cuentas, servidores y estructura del workspace
-          </p>
-        </div>
-      </div>
 
-      <div className="flex gap-4 text-sm" style={{ color: 'var(--text-muted)' }}>
-        <span>{accountCount} cuentas</span>
-        <span aria-hidden="true">·</span>
-        <span>{serverCount} servidores</span>
-        <span aria-hidden="true">·</span>
-        <span>{cloudCount} clouds</span>
-      </div>
-
-      <section>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-display text-base font-bold">Escanear estructura local</h2>
-          <button
-            onClick={handleScan}
-            disabled={scanning}
-            className="btn btn--primary text-xs"
-          >
-            {scanning ? (
-              <span className="flex items-center gap-2">
-                <span className="spinner" />
-                Escaneando...
-              </span>
-            ) : (
-              <>
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                </svg>
-                Escanear workspace
-              </>
-            )}
-          </button>
-        </div>
-
-        <div className="card overflow-hidden">
-          <div className="px-4 py-3 text-xs" style={{ color: 'var(--text-muted)', backgroundColor: 'var(--surface-base)' }}>
-            {config?.workspaceRoot
-              ? `Ruta del workspace: ${config.workspaceRoot}`
-              : 'No hay ruta de workspace configurada. Configure workspaceRoot en config.json.'}
+    <div className="flex flex-col h-full overflow-hidden bg-background">
+      {/* ── Header Section ── */}
+      <div className="flex-none p-6 border-b" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+        <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-6">
+          <div className="flex-1">
+            <h1 className="font-display text-2xl font-bold mb-1 tracking-tight">Global Configuration</h1>
+            <p className="text-sm max-w-2xl" style={{ color: '#a5a5a5' }}>
+              Manage your infrastructure credentials, cloud storage providers, and security keys from a centralized industrial-grade terminal interface.
+            </p>
           </div>
+          <div className="flex flex-col items-end gap-2 shrink-0">
+            <div className="flex items-center gap-2">
+              <select 
+                className="input font-mono text-xs bg-surface-container h-full"
+                value={selectedSyncTarget}
+                onChange={(e) => setSelectedSyncTarget(e.target.value)}
+              >
+                <option value="ALL">Sync: ALL Clouds</option>
+                {config?.accounts?.map((acc: any) => 
+                  acc.originClouds?.map((c: any) => (
+                    <option key={`${acc.name}|${c.name}`} value={`${acc.name}|${c.name}`}>
+                      {acc.name} / {c.name}
+                    </option>
+                  ))
+                )}
+              </select>
+              <button 
+                onClick={handleSyncDriveConfig}
+                disabled={isDriveSyncing}
+                className="btn btn--primary flex items-center gap-2 px-6"
+                title="Sincronizar"
+              >
+                <RefreshCw className={`w-4 h-4 ${isDriveSyncing ? 'animate-spin' : ''}`} />
+                {selectedSyncTarget === 'ALL' ? 'Sync ALL to Drive' : 'Sync Seleccionado'}
+              </button>
+            </div>
+            <div className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-wider" style={{ color: '#ff5252' }}>
+              <TriangleAlert className="w-3.5 h-3.5" />
+              Local disk will be purged after sync
+            </div>
+          </div>
+        </div>
+      </div>
 
-          {scanResult && (
-            <div className="border-t" style={{ borderTopColor: 'var(--border-default)' }}>
-              {scanResult.accounts && scanResult.accounts.length > 0 ? (
-                <div className="divide-y" style={{ borderTopColor: 'var(--border-default)' }}>
-                  {scanResult.accounts.map((account) => (
-                    <div key={account.name} className="px-4 py-3">
-                      <div className="font-medium text-sm mb-2">{account.name}</div>
-                      {account.clouds && account.clouds.length > 0 ? (
-                        <div className="space-y-1.5">
-                          {account.clouds.map((cloud) => (
-                            <div
-                              key={cloud.name}
-                              className="flex items-center justify-between py-1.5 px-3 rounded text-xs"
-                              style={{ backgroundColor: 'var(--surface-overlay)' }}
-                            >
-                              <span className="font-medium">{cloud.name}</span>
-                              <span style={{ color: 'var(--text-muted)' }}>
-                                {cloud.domains.length} dominios
-                              </span>
-                            </div>
-                          ))}
-                        </div>
+      {/* ── Main Content Scroll Area ── */}
+      <div className="flex-1 overflow-y-auto p-6">
+        <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-12 gap-4 pb-24">
+          
+          {/* API Integration */}
+          <section className="md:col-span-8 card p-4 flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b pb-2 mb-2" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded flex items-center justify-center" style={{ backgroundColor: 'oklch(0.7 0.15 260 / 0.1)' }}>
+                  <Webhook className="w-5 h-5" style={{ color: '#34ace0' }} />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-sm">API Integration</h3>
+                  <p className="text-[11px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Third-party service connectivity</p>
+                </div>
+              </div>
+              <div className="px-2 py-0.5 rounded text-[10px] font-mono" style={{ backgroundColor: 'var(--surface-raised)', color: '#34ace0', border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                CONNECTED
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Cloudflare API Token</label>
+                <div className="flex gap-2">
+                  <input 
+                    className="flex-1 input font-mono text-sm" 
+                    type="password" 
+                    placeholder="••••••••••••••••••••••••"
+                    value={cfTokenInput}
+                    onChange={(e) => setCfTokenInput(e.target.value)}
+                  />
+                  <button onClick={handleSaveCfToken} disabled={savingCfToken} className="btn btn--secondary text-xs">
+                    {savingCfToken ? 'Guardando...' : 'Save'}
+                  </button>
+                </div>
+                <p className="text-[11px] italic" style={{ color: '#a5a5a5' }}>Used for DNS propagation and SSL challenges.</p>
+              </div>
+              
+              <div className="space-y-2">
+                <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>GitHub Personal Access Token</label>
+                <div className="flex gap-2">
+                  <input 
+                    className="flex-1 input font-mono text-sm" 
+                    type="password" 
+                    placeholder="ghp_7x2v93..."
+                    value={ghTokenInput}
+                    onChange={(e) => setGhTokenInput(e.target.value)}
+                  />
+                  <button onClick={handleSaveGhToken} disabled={savingGhToken} className="btn btn--secondary text-xs">
+                    {savingGhToken ? 'Guardando...' : 'Save'}
+                  </button>
+                </div>
+                <p className="text-[11px] italic" style={{ color: '#a5a5a5' }}>Requires 'repo' and 'workflow' scopes.</p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Cloudflare Account ID</label>
+                <div className="flex gap-2">
+                  <input 
+                    className="flex-1 input font-mono text-sm" 
+                    type="text" 
+                    placeholder="Optional Account ID"
+                    value={cfAccountIdInput}
+                    onChange={(e) => setCfAccountIdInput(e.target.value)}
+                  />
+                  <button onClick={handleSaveCfAccountId} disabled={savingCfAccountId} className="btn btn--secondary text-xs">
+                    Save
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-[10px] font-mono uppercase tracking-wider flex items-center justify-between" style={{ color: '#a5a5a5' }}>
+                  <span>Hostinger Email API Token</span>
+                  {hostingerMailTokenDisplay && (
+                    <span className="text-[9px] font-mono lowercase" style={{ color: 'oklch(0.75 0.15 220)' }}>
+                      ✓ {hostingerMailTokenDisplay}
+                    </span>
+                  )}
+                </label>
+                <div className="flex gap-2">
+                  <input 
+                    className="flex-1 input font-mono text-sm" 
+                    type="password" 
+                    placeholder={hostingerMailTokenDisplay || "hPanel API Token..."}
+                    value={hostingerMailToken}
+                    onChange={(e) => setHostingerMailToken(e.target.value)}
+                  />
+                  <button 
+                    onClick={async () => {
+                      setSavingMailToken(true);
+                      try {
+                        const res = await (window as any).api.invoke('email:set-config', { apiToken: hostingerMailToken });
+                        if (res?.success) {
+                          const conf = await (window as any).api.invoke('email:get-config');
+                          setHostingerMailTokenDisplay(conf?.obfuscated || '');
+                          setHostingerMailToken('');
+                        }
+                      } finally {
+                        setSavingMailToken(false);
+                      }
+                    }} 
+                    disabled={savingMailToken} 
+                    className="btn btn--secondary text-xs"
+                  >
+                    {savingMailToken ? 'Guardando...' : 'Save'}
+                  </button>
+                </div>
+                <p className="text-[11px] italic" style={{ color: '#a5a5a5' }}>Extracción automática de correos via hPanel API.</p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Master Password</label>
+                <div className="flex gap-2">
+                  <input 
+                    className="flex-1 input font-mono text-sm" 
+                    type="password" 
+                    placeholder="Contraseña Maestra..."
+                    value={masterPasswordInput}
+                    onChange={(e) => setMasterPasswordInput(e.target.value)}
+                  />
+                  <button onClick={handleSaveMasterPassword} disabled={savingMasterPassword} className="btn btn--secondary text-xs">
+                    Save
+                  </button>
+                </div>
+                <p className="text-[11px] italic" style={{ color: '#a5a5a5' }}>Para creación automática de buzones info@.</p>
+              </div>
+            </div>
+          </section>
+
+          {/* Cloud Storage */}
+          <section className="md:col-span-4 card p-4 flex flex-col gap-4">
+            <div className="flex items-center justify-between border-b pb-2 mb-2" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded flex items-center justify-center" style={{ backgroundColor: 'oklch(0.7 0.1 80 / 0.1)' }}>
+                  <CloudUpload className="w-5 h-5" style={{ color: 'oklch(0.7 0.1 80)' }} />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-sm">Cloud Storage</h3>
+                  <p className="text-[11px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>G-Drive Automated Backups</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Local Workspace Folder</label>
+                <div className="flex gap-2">
+                  <input 
+                    className="flex-1 input font-mono text-xs bg-black/50 text-gray-200" 
+                    type="text" 
+                    readOnly
+                    value={workspacePath}
+                  />
+                  <button onClick={handleChangeFolder} disabled={changingFolder} className="btn btn--secondary text-xs">Cambiar</button>
+                </div>
+              </div>
+              
+              {/* --- Configuración Drive --- */}
+              <div className="space-y-4 pt-4 border-t" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Drive Credentials (JSON Client OAuth)</label>
+                  <div className="flex gap-2">
+                    <input 
+                      className="flex-1 input font-mono text-xs bg-black/50 text-gray-200" 
+                      type="text" 
+                      readOnly
+                      placeholder="client_secret_xxx.json path..."
+                      value={driveConfig.credentialsPath}
+                    />
+                    <button onClick={handleSelectCredentials} className="btn btn--secondary text-xs">Seleccionar</button>
+                  </div>
+                  {driveConfig.credentialsPath && (
+                    <div className="mt-2 flex items-center justify-between bg-black/30 p-2 rounded border border-white/5">
+                      <span className="text-xs font-mono" style={{ color: isOAuthAuthenticated ? '#4ade80' : '#f87171' }}>
+                        Estado: {isOAuthAuthenticated ? '🟢 Autenticado con Google' : '🔴 Desconectado'}
+                      </span>
+                      {isOAuthAuthenticated ? (
+                        <button onClick={handleOAuthLogout} className="btn btn--secondary text-xs border-red-500/30 hover:border-red-500 hover:text-red-400">Cerrar Sesión</button>
                       ) : (
-                        <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                          Sin clouds
-                        </p>
+                        <button onClick={handleOAuthLogin} disabled={isAuthenticating} className="btn btn--primary text-xs flex items-center gap-2">
+                          {isAuthenticating && <RefreshCw className="w-3 h-3 animate-spin" />}
+                          Conectar con Google Drive
+                        </button>
                       )}
                     </div>
-                  ))}
+                  )}
                 </div>
-              ) : (
-                <div className="px-4 py-8 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-                  No se encontraron cuentas en el workspace local.
-                  <br />
-                  Los respaldos deben estar en <code className="font-mono rounded px-1" style={{ backgroundColor: 'oklch(0 0 0 / 0.3)' }}>respaldos/&lt;cuenta&gt;/&lt;cloud&gt;/</code>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="font-display text-base font-bold mb-4">Cuentas configuradas</h2>
-        <div className="card overflow-hidden">
-          {config?.accounts && config.accounts.length > 0 ? (
-            <div className="divide-y" style={{ borderTopColor: 'var(--border-default)' }}>
-              {config.accounts.map((account: any) => (
-                <div key={account.name} className="px-4 py-3">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-sm">{account.name}</span>
-                    <span className="text-xs" style={{ color: 'var(--text-muted)' }}>
-                      {(account.originClouds || []).length} clouds
-                    </span>
+                <div className="space-y-2">
+                  <label className="block text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Drive Root Folder ID</label>
+                  <div className="flex gap-2">
+                    <input 
+                      className="flex-1 input font-mono text-xs bg-black/50 text-gray-200" 
+                      type="text" 
+                      placeholder="Ej. 1cd3KPuEfgoa9crYLqS00JsuIOks7xafh"
+                      value={driveConfig.rootFolderId}
+                      onChange={(e) => setDriveConfig(prev => ({ ...prev, rootFolderId: e.target.value }))}
+                      onBlur={(e) => handleSaveDriveRoot(e.target.value)}
+                    />
                   </div>
                 </div>
-              ))}
-            </div>
-          ) : (
-            <div className="px-4 py-8 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-              No hay cuentas configuradas. Agregue servidores o clouds desde el Panel principal para crear la primera cuenta automáticamente.
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="font-display text-base font-bold mb-4">Directorio de Respaldos</h2>
-        <div className="card p-5">
-          <div className="flex flex-col gap-3">
-            <div className="flex-1">
-              <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
-                Ruta del workspace (carpeta raíz)
-              </p>
-              <p
-                className="text-xs font-mono truncate"
-                style={{
-                  color: workspacePath ? 'var(--text-secondary)' : 'var(--text-muted)',
-                  padding: '6px 8px',
-                  background: 'var(--surface-base)',
-                  borderRadius: '4px',
-                  border: '1px solid var(--border-default)',
-                }}
-                title={workspacePath || ''}
-              >
-                {workspacePath || 'No configurado'}
-              </p>
-            </div>
-
-            {respaldosPath && (
-              <div>
-                <p className="text-xs font-medium mb-1" style={{ color: 'var(--text-muted)' }}>
-                  Carpeta de respaldos detectada
-                </p>
-                <p
-                  className="text-xs font-mono truncate"
-                  style={{
-                    color: 'var(--text-muted)',
-                    padding: '6px 8px',
-                    background: 'var(--surface-base)',
-                    borderRadius: '4px',
-                    border: '1px solid var(--border-default)',
-                  }}
-                  title={respaldosPath}
-                >
-                  {respaldosPath}
-                </p>
-                <p className="text-[11px] mt-1" style={{ color: 'var(--text-muted)' }}>
-                  Estructura esperada: <code className="font-mono">respaldos/&lt;cuenta&gt;/&lt;cloud&gt;/</code>
-                </p>
               </div>
-            )}
 
-            <button
-              onClick={handleChangeFolder}
-              disabled={changingFolder}
-              className="btn btn--secondary text-xs flex items-center gap-2 self-start"
-            >
-              {changingFolder ? (
-                <><span className="spinner" /> Seleccionando...</>             
-              ) : (
-                <>
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                  Cambiar carpeta...
-                </>
+              {/* Terminal Logs */}
+              {(driveLogs.length > 0 || isDriveSyncing) && (
+                <div className="mt-4 pt-4 border-t" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="text-[10px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Terminal Sync Activity</h4>
+                    {isDriveSyncing && <span className="flex items-center gap-1 text-[10px] text-green-400"><RefreshCw className="w-3 h-3 animate-spin"/> Syncing...</span>}
+                  </div>
+                  <div 
+                    ref={terminalRef}
+                    onScroll={handleTerminalScroll}
+                    className="bg-black p-3 rounded-lg font-mono text-xs overflow-y-auto custom-scrollbar h-48 border border-white/10 shadow-inner"
+                  >
+                    {driveLogs.map((log, i) => (
+                      <div key={i} className="mb-1 break-words">
+                        <span className="text-gray-500 mr-2">[{new Date(log.time).toLocaleTimeString()}]</span>
+                        <span className={
+                          log.type === 'error' ? 'text-red-400' :
+                          log.type === 'warning' ? 'text-yellow-400' :
+                          log.type === 'success' ? 'text-green-400' :
+                          'text-gray-300'
+                        }>{log.msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
-            </button>
-          </div>
-        </div>
-      </section>
 
-      {/* 🔥 HOTFIX v1.6.0: Sección de llaves SSH con botón de generación */}
-      <section>
-        <h2 className="font-display text-base font-bold mb-4">Llaves SSH</h2>
-        <div className="card p-5">
-          <div className="flex flex-col md:flex-row md:items-center gap-4">
-            <div className="flex-1">
-              <p className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                {config?.sshKeys?.publicKeyPath || config?.sshKeys?.privateKeyPath
-                  ? `Llave actual: ${config.sshKeys.privateKeyPath || config.sshKeys.publicKeyPath || '~/.ssh/id_ed25519'}`
-                  : 'No hay llave SSH configurada. Genere una nueva para comenzar.'}
-              </p>
-              <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-                Se generará una llave ED25519 sin passphrase en ~/.ssh/id_ed25519
-              </p>
+              <div className="space-y-2 pt-4 border-t" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+                <button onClick={handleScan} disabled={scanning} className="btn w-full flex items-center justify-center gap-2" style={{ border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                  <RefreshCw className={`w-4 h-4 ${scanning ? 'animate-spin' : ''}`} />
+                  {scanning ? 'Escaneando...' : 'Escanear Workspace Local'}
+                </button>
+              </div>
+              
+              {scanResult && scanResult.accounts && scanResult.accounts.length > 0 && (
+                <div className="mt-4 p-3 rounded" style={{ backgroundColor: 'oklch(0.7 0.1 80 / 0.1)', border: '1px solid oklch(0.7 0.1 80 / 0.2)' }}>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="text-[10px] font-mono uppercase tracking-wider" style={{ color: 'oklch(0.7 0.1 80)' }}>Workspaces Detectados</h4>
+                    <span className="text-[10px] font-bold py-0.5 px-2 rounded-full" style={{ backgroundColor: 'oklch(0.7 0.1 80 / 0.2)', color: 'oklch(0.7 0.1 80)' }}>
+                      {scanResult.accounts.length}
+                    </span>
+                  </div>
+                  <ul className="space-y-2 max-h-32 overflow-y-auto pr-1 custom-scrollbar">
+                    {scanResult.accounts.map((acc, i) => (
+                      <li key={i} className="flex items-center justify-between border-b pb-1 last:border-0 last:pb-0" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+                        <span className="text-xs font-bold">{acc.name}</span>
+                        <span className="text-[10px] font-mono" style={{ color: '#a5a5a5' }}>
+                          {acc.clouds?.length || 0} clouds
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
-            <button
-              onClick={handleGenerateKey}
+          </section>
+
+
+
+          {/* Security Section */}
+          <section className="md:col-span-6 card p-4">
+            <div className="flex items-center justify-between border-b pb-2 mb-4" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded flex items-center justify-center" style={{ backgroundColor: 'var(--color-error-bg)' }}>
+                  <ShieldAlert className="w-5 h-5" style={{ color: '#ff5252' }} />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-sm">Security</h3>
+                  <p className="text-[11px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>SSH Keys & Authentication</p>
+                </div>
+              </div>
+            </div>
+            
+            <div className="p-3 rounded mb-4" style={{ backgroundColor: '#000', border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-mono text-xs" style={{ color: '#34ace0' }}>ACTIVE KEY</span>
+                <span className="text-[10px] font-mono uppercase" style={{ color: '#a5a5a5' }}>
+                  {config?.sshKeys?.publicKeyPath ? 'Configured' : 'Missing'}
+                </span>
+              </div>
+              <code className="block text-[11px] font-mono break-all" style={{ color: '#a5a5a5' }}>
+                {config?.sshKeys?.publicKeyPath || 'No SSH key configured. Generate one below.'}
+              </code>
+            </div>
+            
+            <button 
+              onClick={handleGenerateKey} 
               disabled={generatingKey}
-              className="btn btn--primary text-xs flex-shrink-0"
+              className="btn w-full flex items-center justify-center gap-2"
+              style={{ backgroundColor: 'var(--surface-raised)', border: '1px solid rgba(255, 255, 255, 0.1)' }}
             >
-              {generatingKey ? (
-                <span className="flex items-center gap-2">
-                  <span className="spinner" />
-                  Generando...
-                </span>
-              ) : (
-                <>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                    <path d="M7 11V7a5 5 0 0110 0v4" />
-                  </svg>
-                  Generar nueva llave SSH
-                </>
-              )}
+              <Key className={`w-4 h-4 ${generatingKey ? 'animate-spin' : ''}`} />
+              {generatingKey ? 'Generando...' : 'Generate New ED25519 SSH Key'}
             </button>
-          </div>
-        </div>
-      </section>
+          </section>
 
-      <section>
-        <h2 className="font-display text-base font-bold mb-4">Integraciones Externas</h2>
-        <div className="card p-5 space-y-5">
-
-          {/* ── Cloudflare API Token ── */}
-          <div className="flex flex-col md:flex-row md:items-end gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                Cloudflare API Token
-              </label>
-              <input
-                type="password"
-                value={cfTokenInput}
-                onChange={e => setCfTokenInput(e.target.value)}
-                placeholder={
-                  cfTokenDisplay
-                    ? `Token guardado: ${cfTokenDisplay}`
-                    : 'Ingrese el API Token de Cloudflare'
-                }
-                className="input font-mono text-xs"
-                style={{ width: '100%' }}
-              />
-              {cfTokenDisplay && (
-                <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                  Token actual: {cfTokenDisplay}
-                </p>
-              )}
+          {/* Licensing */}
+          <section className="md:col-span-6 card p-4">
+            <div className="flex items-center justify-between border-b pb-2 mb-4" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+              <div className="flex items-center gap-2">
+                <div className="w-10 h-10 rounded flex items-center justify-center" style={{ backgroundColor: 'oklch(0.7 0.15 65 / 0.1)' }}>
+                  <Award className="w-5 h-5" style={{ color: 'oklch(0.7 0.15 65)' }} />
+                </div>
+                <div>
+                  <h3 className="font-display font-bold text-sm">Licensing</h3>
+                  <p className="text-[11px] font-mono uppercase tracking-wider" style={{ color: '#a5a5a5' }}>Enterprise Extensions</p>
+                </div>
+              </div>
             </div>
-            <button
-              onClick={handleSaveCfToken}
-              disabled={savingCfToken || !cfTokenInput.trim()}
-              className="btn btn--primary text-xs flex-shrink-0"
-            >
-              {savingCfToken ? (
-                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
-              ) : (
-                'Guardar'
-              )}
-            </button>
-          </div>
-
-          <div className="flex flex-col md:flex-row md:items-end gap-4 mt-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                Cloudflare Account ID
-                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-                  (requerido para crear zonas nuevas)
-                </span>
-              </label>
-              <input
-                type="text"
-                value={cfAccountIdInput}
-                onChange={e => setCfAccountIdInput(e.target.value)}
-                placeholder="Ej. 1a2b3c4d5e6f7g8h9i0j..."
-                className="input font-mono text-xs"
-                style={{ width: '100%' }}
-              />
+            
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between p-3 rounded" style={{ backgroundColor: 'var(--surface-raised)', border: '1px solid rgba(255, 255, 255, 0.1)' }}>
+                <div className="flex items-center gap-3">
+                  <FileArchive className="w-5 h-5" style={{ color: '#34ace0' }} />
+                  <div>
+                    <h4 className="text-sm font-bold">Elementor Pro Zip</h4>
+                    <p className="text-[11px]" style={{ color: '#a5a5a5' }}>
+                      {epZipPath ? epZipPath.split('').pop() : 'No zip selected'}
+                    </p>
+                  </div>
+                </div>
+                <button onClick={handleSelectEpZip} className="text-xs font-mono hover:underline" style={{ color: '#34ace0' }}>UPLOAD</button>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-3 border rounded flex flex-col gap-1" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+                  <span className="text-[10px] font-mono uppercase" style={{ color: '#a5a5a5' }}>License Status</span>
+                  <span className="text-sm font-bold">{epLicenseDisplay ? 'Valid' : 'Missing'}</span>
+                </div>
+                <div className="p-3 border rounded flex flex-col gap-1" style={{ borderColor: 'rgba(255, 255, 255, 0.1)' }}>
+                  <span className="text-[10px] font-mono uppercase" style={{ color: '#a5a5a5' }}>License Key</span>
+                  <div className="flex gap-2">
+                    <input 
+                      type="password" 
+                      className="input font-mono text-[10px] w-full p-1 h-6" 
+                      placeholder="XXXX-XXXX..."
+                      value={epLicenseKey}
+                      onChange={(e) => setEpLicenseKey(e.target.value)}
+                    />
+                    <button onClick={handleSaveEpLicense} disabled={savingEp} className="btn btn--ghost p-1 text-[10px] h-6">Save</button>
+                  </div>
+                </div>
+              </div>
             </div>
-            <button
-              onClick={handleSaveCfAccountId}
-              disabled={savingCfAccountId || !cfAccountIdInput.trim()}
-              className="btn btn--primary text-xs flex-shrink-0"
-            >
-              {savingCfAccountId ? (
-                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
-              ) : (
-                'Guardar'
-              )}
-            </button>
-          </div>
-
-          {/* ── Separador ── */}
-          <div style={{ borderTop: '1px solid var(--border-default)' }} />
-
-          {/* ── GitHub API Token ── */}
-          <div className="flex flex-col md:flex-row md:items-end gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                GitHub API Token
-                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-                  (requerido por ScalifyLabs)
-                </span>
-              </label>
-              <input
-                id="config-github-token"
-                type="password"
-                value={ghTokenInput}
-                onChange={e => setGhTokenInput(e.target.value)}
-                placeholder={
-                  ghTokenDisplay
-                    ? `Token guardado: ${ghTokenDisplay}`
-                    : 'ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
-                }
-                className="input font-mono text-xs"
-                style={{ width: '100%' }}
-              />
-              {ghTokenDisplay && (
-                <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                  Token actual: {ghTokenDisplay}
-                </p>
-              )}
-              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                Necesita scope <code className="font-mono px-1 rounded" style={{ backgroundColor: 'oklch(0 0 0 / 0.3)' }}>write:public_key</code> para registrar deploy keys en GitHub.
-              </p>
-            </div>
-            <button
-              onClick={handleSaveGhToken}
-              disabled={savingGhToken || !ghTokenInput.trim()}
-              className="btn btn--primary text-xs flex-shrink-0"
-            >
-              {savingGhToken ? (
-                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
-              ) : (
-                'Guardar'
-              )}
-            </button>
-          </div>
-
-          {/* ── Separador ── */}
-          <div style={{ borderTop: '1px solid var(--border-default)' }} />
-
-          {/* ── Certificados SSL ── */}
-          <div className="flex flex-col md:flex-row md:items-end gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                Email para certificados SSL
-                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-                  (alertas de caducidad de Let's Encrypt)
-                </span>
-              </label>
-              <input
-                type="email"
-                value={sslEmailInput}
-                onChange={e => setSslEmailInput(e.target.value)}
-                placeholder="admin@ejemplo.com"
-                className="input font-mono text-xs"
-                style={{ width: '100%' }}
-              />
-              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                Let's Encrypt enviará alertas de renovación a este correo. Requerido para emisión de certificados SSL.
-              </p>
-            </div>
-            <button
-              onClick={handleSaveSslEmail}
-              disabled={savingSslEmail}
-              className="btn btn--primary text-xs flex-shrink-0"
-            >
-              {savingSslEmail ? (
-                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
-              ) : (
-                'Guardar'
-              )}
-            </button>
-          </div>
-
-          {/* ── Separador ── */}
-          <div style={{ borderTop: '1px solid var(--border-default)' }} />
-
-          {/* ── Contraseña Maestra de Correos ── */}
-          <div className="flex flex-col md:flex-row md:items-end gap-4">
-            <div className="flex-1">
-              <label className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-                Contraseña Maestra de Correos
-                <span className="ml-2 text-xs font-normal" style={{ color: 'var(--text-muted)' }}>
-                  (creación automática de buzones info@)
-                </span>
-              </label>
-              <input
-                type="password"
-                value={masterPasswordInput}
-                onChange={e => setMasterPasswordInput(e.target.value)}
-                placeholder={hasMasterPassword ? "•••••••• (Contraseña almacenada en el sistema)" : "Ingrese contraseña maestra"}
-                className="input font-mono text-xs"
-                style={{ width: '100%' }}
-              />
-              {hasMasterPassword && (
-                <p className="mt-1 text-xs text-emerald-400">
-                  Contraseña almacenada en el sistema
-                </p>
-              )}
-              <p className="mt-1 text-xs" style={{ color: 'var(--text-muted)' }}>
-                Esta contraseña se usará para crear o actualizar el correo info@dominio.com en las configuraciones automáticas. Se almacena de forma segura en el sistema.
-              </p>
-            </div>
-            <button
-              onClick={handleSaveMasterPassword}
-              disabled={savingMasterPassword || !masterPasswordInput.trim()}
-              className="btn btn--primary text-xs flex-shrink-0"
-            >
-              {savingMasterPassword ? (
-                <span className="flex items-center gap-2"><span className="spinner" />Guardando...</span>
-              ) : (
-                'Guardar'
-              )}
-            </button>
-          </div>
+          </section>
 
         </div>
-      </section>
+      </div>
     </div>
   );
 };
+
 
 export default ConfigPanel;

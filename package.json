@@ -1,6 +1,6 @@
 {
   "name": "kraken-cli",
-  "version": "1.20.99",
+  "version": "1.22.24",
   "description": "Kraken CLI Control Center - Desktop application for managing WordPress migrations",
   "main": "src/electron/main.js",
   "scripts": {
@@ -63,6 +63,8 @@
     "csv-parse": "^6.2.1",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.3",
+    "googleapis": "^173.0.0",
+    "imap": "^0.8.19",
     "keytar": "^7.9.0",
     "node-machine-id": "^1.1.12",
     "node-ssh": "^13.2.0",
@@ -71,6 +73,7 @@
     "react-dom": "^18.2.0",
     "ssh2": "^1.15.0",
     "tar": "^7.5.13",
+    "tar-stream": "^3.2.0",
     "uuid": "^9.0.1",
     "whois": "^2.14.2",
     "whois-json": "^2.0.4"

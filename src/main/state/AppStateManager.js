@@ -155,7 +155,7 @@ const DEFAULT_STATE = {
 };
 
 // ── Volatile keys — nunca se persisten a disco ──
-const VOLATILE_KEYS = ['results', 'recentLogs', 'domainsQueue', 'currentDomain', 'currentMessage', 'currentProgress', 'currentIndex', 'batchAccountName', 'batchCloudName', 'batchServerName', 'sourceAccount', 'sourceCloud'];
+const VOLATILE_KEYS = ['results', 'recentLogs', 'domainsQueue', 'currentDomain', 'currentMessage', 'currentProgress', 'currentIndex', 'batchAccountName', 'batchCloudName', 'batchServerName', 'sourceAccount', 'sourceCloud', 'history'];
 
 class AppStateManager {
   constructor() {

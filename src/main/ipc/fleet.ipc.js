@@ -224,7 +224,7 @@ function registerFleetHandlers(ipcMain, mainWindow) {
       const config = await getConfig();
       const server = findServer(config, serverName);
       const ssh = getSshService();
-      client = await ssh.connect(server.sshCredentials, `fleet-log-${serverName}`);
+      client = await ssh.connectCached(server.sshCredentials);
       const result = await ssh.executeCommand(
         client,
         `tail -n ${lines} /var/log/plesk/panel.log 2>/dev/null || echo "[SIN LOG] /var/log/plesk/panel.log no encontrado"`,
@@ -234,7 +234,7 @@ function registerFleetHandlers(ipcMain, mainWindow) {
     } catch (err) {
       return { success: false, error: err.message };
     } finally {
-      if (client) { try { await getSshService().disconnect(client); } catch (_) { } }
+      // disconnect omitido (manejado por el pool de conexión)
     }
   });
 
@@ -248,8 +248,8 @@ function registerFleetHandlers(ipcMain, mainWindow) {
       const server = findServer(config, serverName);
       const ssh = getSshService();
       console.log(`[FLEET:ACTION] "${actionDef.label}" en "${serverName}"`);
-      client = await ssh.connect(server.sshCredentials, `fleet-action-${serverName}-${Date.now()}`);
-      const result = await ssh.executeCommand(client, actionDef.cmd, { timeout: 120000 });
+      client = await ssh.connectCached(server.sshCredentials);
+      const result = await ssh.executeCommand(client, actionDef.cmd, { timeoutMs: 120000 });
       return {
         success: result.code === 0 || result.code === null,
         output: result.stdout || result.stderr || '(sin salida)',
@@ -258,7 +258,7 @@ function registerFleetHandlers(ipcMain, mainWindow) {
     } catch (err) {
       return { success: false, error: err.message, label: actionDef?.label };
     } finally {
-      if (client) { try { await getSshService().disconnect(client); } catch (_) { } }
+      // disconnect omitido (manejado por el pool)
     }
   });
 
@@ -267,25 +267,32 @@ function registerFleetHandlers(ipcMain, mainWindow) {
   // 2. HTTP HEAD concurrente con semáforo (default 15)
   // 3. Mapea código → acción recomendada
   // 4. Emite fleet:health-progress por dominio
-  ipcMain.handle('fleet:scan-health', async (_event, { serverName, concurrency = 15 }) => {
+  ipcMain.handle('fleet:scan-health', async (_event, { serverName, targetDomain, concurrency = 15 }) => {
     let client = null;
     try {
       const config = await getConfig();
       const server = findServer(config, serverName);
       const ssh = getSshService();
 
-      client = await ssh.connect(server.sshCredentials, `fleet-health-${Date.now()}`);
-      const dbRes = await ssh.executeCommand(client,
-        `plesk db -sNe "SELECT name FROM domains WHERE status=0 ORDER BY name"`,
-        { timeout: 30000 }
-      );
-      await ssh.disconnect(client); client = null;
+      client = await ssh.connectCached(server.sshCredentials);
+      
+      let rawDomains = [];
+      if (targetDomain && typeof targetDomain === 'string' && targetDomain.trim().length > 0) {
+        rawDomains = [targetDomain.trim()];
+      } else {
+        const dbRes = await ssh.executeCommand(client,
+          `plesk db -sNe "SELECT name FROM domains WHERE status=0 ORDER BY name"`,
+          { timeoutMs: 30000 }
+        );
+        rawDomains = dbRes.stdout.split('\n').map(d => d.trim()).filter(Boolean);
+      }
+      
+      // disconnect omitido (manejado por el pool)
 
       // Dedup via Set: Plesk puede devolver duplicados cuando un dominio tiene
       // aliases o entradas múltiples en la tabla domains. El Set elimina
       // duplicados en la fuente — sin esto el frontend recibe N eventos
       // por el mismo dominio y React lanza 90k "duplicate key" warnings.
-      const rawDomains = dbRes.stdout.split('\n').map(d => d.trim()).filter(Boolean);
       const domains = [...new Set(rawDomains)];
       if (!domains.length) return { success: true, results: [] };
 
@@ -322,7 +329,7 @@ function registerFleetHandlers(ipcMain, mainWindow) {
     } catch (err) {
       return { success: false, error: err.message };
     } finally {
-      if (client) { try { await getSshService().disconnect(client); } catch (_) { } }
+      // disconnect omitido (manejado por el pool)
     }
   });
 
@@ -377,7 +384,7 @@ function registerFleetHandlers(ipcMain, mainWindow) {
         if (SERVER_ACTIONS.has(recommendation)) serverActionSet.add(recommendation);
       }
 
-      client = await ssh.connect(server.sshCredentials, `fleet-batch-${Date.now()}`);
+      client = await ssh.connectCached(server.sshCredentials);
 
       // Helper: ejecuta un comando y emite progreso al acordeón.
       // Si la acción tiene cmdFn (repair-full), ejecuta POR DOMINIO secuencialmente.
@@ -526,29 +533,29 @@ function registerFleetHandlers(ipcMain, mainWindow) {
       emit('fleet:batch-progress', { type: 'batch-error', error: err.message });
       return { success: false, error: err.message };
     } finally {
-      if (client) { try { await getSshService().disconnect(client); } catch (_) { } }
+      // disconnect omitido
     }
 
   });
 
   // ── Auto-Diagnóstico Inteligente (Lectura de error_log) ──────────────────
-  ipcMain.handle('fleet:diagnose-site', async (_event, { serverName, dominio }) => {
+  ipcMain.handle('fleet:diagnose-site', async (_event, { serverName, dominio, httpCode }) => {
     let client = null;
     try {
       const config = await getConfig();
       const server = findServer(config, serverName);
       const ssh = getSshService();
-      client = await ssh.connect(server.sshCredentials, `diagnose-${dominio}`);
+      client = await ssh.connectCached(server.sshCredentials);
 
       // Wrapper de la función de ejecución para inyectarla en el motor
-      const ejecutarSSH = (comando) => ssh.executeCommand(client, comando, { timeout: 30000 });
+      const ejecutarSSH = (comando) => ssh.executeCommand(client, comando, { timeoutMs: 30000 });
 
-      const payload = await diagnosticarSitio(ejecutarSSH, dominio, 100);
+      const payload = await diagnosticarSitio(ejecutarSSH, dominio, 100, httpCode);
       return { success: true, payload };
     } catch (err) {
       return { success: false, error: err.message };
     } finally {
-      if (client) { try { await getSshService().disconnect(client); } catch (_) { } }
+      // disconnect omitido
     }
   });
 
@@ -559,9 +566,9 @@ function registerFleetHandlers(ipcMain, mainWindow) {
       const config = await getConfig();
       const server = findServer(config, serverName);
       const ssh = getSshService();
-      client = await ssh.connect(server.sshCredentials, `mitigate-${Date.now()}`);
+      client = await ssh.connectCached(server.sshCredentials);
 
-      const result = await ssh.executeCommand(client, comandoMitigacion, { timeout: 120000 });
+      const result = await ssh.executeCommand(client, comandoMitigacion, { timeoutMs: 120000 });
       return {
         success: result.code === 0 || result.code === null,
         output: result.stdout || result.stderr || '(Sin salida)',
@@ -569,7 +576,7 @@ function registerFleetHandlers(ipcMain, mainWindow) {
     } catch (err) {
       return { success: false, output: err.message };
     } finally {
-      if (client) { try { await getSshService().disconnect(client); } catch (_) { } }
+      // disconnect omitido
     }
   });
 }

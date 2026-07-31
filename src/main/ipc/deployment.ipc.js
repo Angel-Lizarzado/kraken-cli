@@ -171,6 +171,9 @@ function registerDeploymentHandlers(ipcMain, mainWindow, scope) {
         isRunning: false,
         currentMessage: 'Despliegue masivo finalizado',
       });
+      if (result.summary) {
+        sendDeploymentLog(`Resumen en servidor ${serverName}: ${result.summary.successful} success, ${result.summary.failed} errores, ${result.summary.completed_with_warnings} warnings`, 'info');
+      }
       sendDeploymentLog('Despliegue masivo finalizado', 'success');
       event.sender.send('deployment:state-changed', appState.getState('deployment'));
 

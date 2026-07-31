@@ -152,25 +152,19 @@ export default function UpdateNotifier() {
             display: 'flex',
             flexDirection: 'column',
             gap: '8px',
-            backgroundColor: 'var(--surface-overlay)',
-            border: '1px solid var(--border-default)',
             borderRadius: '8px',
             padding: '12px 14px',
             minWidth: '260px',
             maxWidth: '320px',
             animation: 'notifier-slide-in 150ms ease-out forwards',
           }}
+          className="bg-surface-container border border-outline-variant"
         >
           {/* Header row */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <span
-              style={{
-                fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                color: 'var(--text-primary)',
-                letterSpacing: '0.02em',
-              }}
+              className="text-xs font-semibold text-on-surface"
+              style={{ letterSpacing: '0.02em' }}
             >
               {update.phase === 'available'
                 ? `Actualización disponible — v${update.version}`
@@ -179,16 +173,14 @@ export default function UpdateNotifier() {
             <button
               onClick={handleDismissToast}
               aria-label="Cerrar notificación"
+              className="text-on-surface-variant hover:text-on-surface transition-colors text-xs"
               style={{
                 background: 'none',
                 border: 'none',
                 cursor: 'pointer',
-                color: 'var(--text-muted)',
-                fontSize: '0.75rem',
                 lineHeight: 1,
                 padding: '2px 4px',
                 borderRadius: '4px',
-                transition: 'color 150ms ease-out',
               }}
             >
               ✕
@@ -196,13 +188,7 @@ export default function UpdateNotifier() {
           </div>
 
           {/* Mensaje secundario */}
-          <span
-            style={{
-              fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-              fontSize: '0.75rem',
-              color: 'var(--text-secondary)',
-            }}
-          >
+          <span className="text-xs text-on-surface-variant">
             {update.phase === 'available'
               ? 'Se está descargando en segundo plano.'
               : `Progreso: ${update.percent}%`}
@@ -214,18 +200,15 @@ export default function UpdateNotifier() {
               style={{
                 height: '4px',
                 borderRadius: '2px',
-                backgroundColor: 'var(--surface-base)',
                 overflow: 'hidden',
               }}
+              className="bg-surface-container-low"
             >
               <div
                 style={{
                   height: '100%',
                   width: `${update.percent}%`,
-                  backgroundColor:
-                    update.percent >= 90
-                      ? 'var(--color-warning)'
-                      : 'var(--color-accent)',
+                  backgroundColor: update.percent >= 90 ? 'oklch(0.7 0.18 75)' : 'oklch(0.6 0.15 250)',
                   transition: 'width 300ms ease-in-out',
                 }}
               />
@@ -269,8 +252,6 @@ export default function UpdateNotifier() {
             <div
               style={{
                 pointerEvents: 'all',
-                backgroundColor: 'var(--surface-raised)',
-                border: '1px solid var(--border-hover)',
                 borderRadius: '8px',
                 boxShadow: '0 25px 50px -12px rgba(0,0,0,0.6)',
                 width: '100%',
@@ -279,6 +260,7 @@ export default function UpdateNotifier() {
                 flexDirection: 'column',
                 gap: '0',
               }}
+              className="bg-surface-container-low border border-outline-variant"
             >
               {/* Header */}
               <div
@@ -287,34 +269,28 @@ export default function UpdateNotifier() {
                   alignItems: 'center',
                   justifyContent: 'space-between',
                   padding: '16px 20px',
-                  borderBottom: '1px solid var(--border-default)',
                 }}
+                className="border-b border-outline-variant"
               >
                 <h2
                   id="updater-modal-title"
-                  style={{
-                    margin: 0,
-                    fontFamily: 'var(--font-display, Satoshi, system-ui, sans-serif)',
-                    fontSize: '0.875rem',
-                    fontWeight: 600,
-                    color: 'var(--text-primary)',
-                  }}
+                  className="text-sm font-semibold text-on-surface"
+                  style={{ margin: 0 }}
                 >
                   Nueva versión lista — v{update.version}
                 </h2>
                 <button
                   onClick={handleDismissModal}
                   aria-label="Posponer actualización"
+                  className="text-on-surface-variant hover:text-on-surface transition-colors"
                   style={{
                     background: 'none',
                     border: 'none',
                     cursor: 'pointer',
-                    color: 'var(--text-muted)',
                     fontSize: '0.875rem',
                     lineHeight: 1,
                     padding: '4px 6px',
                     borderRadius: '4px',
-                    transition: 'color 150ms ease-out',
                   }}
                 >
                   ✕
@@ -325,13 +301,8 @@ export default function UpdateNotifier() {
               <div style={{ padding: '20px' }}>
                 <p
                   id="updater-modal-desc"
-                  style={{
-                    margin: 0,
-                    fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-                    fontSize: '0.875rem',
-                    lineHeight: 1.6,
-                    color: 'var(--text-secondary)',
-                  }}
+                  className="text-sm text-on-surface-variant"
+                  style={{ margin: 0, lineHeight: 1.6 }}
                 >
                   La actualización se descargó correctamente. La aplicación se
                   reiniciará para aplicar los cambios.
@@ -345,46 +316,18 @@ export default function UpdateNotifier() {
                   justifyContent: 'flex-end',
                   gap: '8px',
                   padding: '12px 20px 16px',
-                  borderTop: '1px solid var(--border-default)',
                 }}
+                className="border-t border-outline-variant"
               >
                 <button
                   onClick={handleDismissModal}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 12px',
-                    borderRadius: '6px',
-                    fontSize: '0.75rem',
-                    fontWeight: 500,
-                    fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-                    cursor: 'pointer',
-                    transition: 'all 150ms ease-out',
-                    background: 'transparent',
-                    color: 'var(--text-secondary)',
-                    border: '1px solid var(--border-default)',
-                  }}
+                  className="btn btn--secondary text-xs"
                 >
                   Más tarde
                 </button>
                 <button
                   onClick={handleInstall}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '6px',
-                    padding: '6px 14px',
-                    borderRadius: '6px',
-                    fontSize: '0.75rem',
-                    fontWeight: 500,
-                    fontFamily: 'var(--font-body, Inter, system-ui, sans-serif)',
-                    cursor: 'pointer',
-                    transition: 'all 150ms ease-out',
-                    background: 'var(--color-accent)',
-                    color: '#fff',
-                    border: 'none',
-                  }}
+                  className="btn btn--primary text-xs"
                 >
                   Instalar ahora
                 </button>

@@ -34,12 +34,12 @@ function parseLogs(raw: string): ParsedLogEntry[] {
 }
 
 const BADGE_COLORS: Record<string, { bg: string; text: string }> = {
-  ERROR: { bg: 'rgba(239,68,68,0.18)', text: '#ef4444' },
-  WARN:  { bg: 'rgba(234,179,8,0.18)', text: '#eab308' },
-  INFO:  { bg: 'rgba(59,130,246,0.18)', text: '#60a5fa' },
+  ERROR: { bg: 'oklch(0.45 0.12 25 / 0.18)', text: 'oklch(0.6 0.2 25)' },
+  WARN:  { bg: 'oklch(0.55 0.15 75 / 0.18)', text: 'oklch(0.7 0.18 75)' },
+  INFO:  { bg: 'oklch(0.5 0.1 250 / 0.18)', text: 'oklch(0.65 0.12 250)' },
 };
 
-const DEFAULT_BADGE = { bg: 'rgba(100,116,139,0.18)', text: '#94a3b8' };
+const DEFAULT_BADGE = { bg: 'oklch(0.45 0.01 250 / 0.18)', text: 'oklch(0.55 0.01 250)' };
 
 // ── Props ──
 interface LogPanelProps {
@@ -61,7 +61,7 @@ export default function LogPanel({ logs, loading, onRefresh }: LogPanelProps) {
     <div className="space-y-3">
       {/* Toolbar */}
       <div className="flex items-center justify-between">
-        <span className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
+        <span className="text-xs font-medium text-on-surface-variant">
           Últimas 50 líneas — /var/log/plesk/panel.log
         </span>
         <button onClick={onRefresh} className="btn btn--secondary text-xs" disabled={loading}>
@@ -72,24 +72,13 @@ export default function LogPanel({ logs, loading, onRefresh }: LogPanelProps) {
 
       {/* Content */}
       {loading ? (
-        <div
-          className="rounded-lg p-3 font-mono text-xs"
-          style={{
-            backgroundColor: 'var(--surface-overlay)',
-            minHeight: '200px',
-            color: 'var(--text-muted)',
-          }}
-        >
+        <div className="rounded-lg p-3 font-mono text-xs bg-surface-container text-on-surface-variant" style={{ minHeight: '200px' }}>
           Cargando logs...
         </div>
       ) : logs ? (
         <div
-          className="rounded-lg overflow-auto scrollbar-thin"
-          style={{
-            backgroundColor: 'var(--surface-overlay)',
-            maxHeight: 'calc(100vh - 320px)',
-            minHeight: '200px',
-          }}
+          className="rounded-lg overflow-auto scrollbar-thin bg-surface-container"
+          style={{ maxHeight: 'calc(100vh - 320px)', minHeight: '200px' }}
         >
           <div className="space-y-px">
             {entries.map((entry, i) => {
@@ -124,29 +113,28 @@ export default function LogPanel({ logs, loading, onRefresh }: LogPanelProps) {
                       {entry.level}
                     </span>
                     <span
-                      className="truncate text-xs"
-                      style={{ color: 'var(--text-muted)', flex: '0 0 130px', minWidth: 0 }}
+                      className="truncate text-xs text-on-surface-variant"
+                      style={{ flex: '0 0 130px', minWidth: 0 }}
                     >
                       {entry.timestamp}
                     </span>
                     <span
-                      className="truncate text-xs"
-                      style={{ color: 'var(--text-secondary)', flex: '1 1 auto', minWidth: 0 }}
+                      className="truncate text-xs text-on-surface"
+                      style={{ flex: '1 1 auto', minWidth: 0 }}
                     >
                       {entry.module}
                     </span>
                     {isOpen ? (
-                      <ChevronDown size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                      <ChevronDown size={14} className="text-on-surface-variant flex-shrink-0" />
                     ) : (
-                      <ChevronRight size={14} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                      <ChevronRight size={14} className="text-on-surface-variant flex-shrink-0" />
                     )}
                   </div>
                   {isOpen && (
                     <div
-                      className="px-3 py-2 text-xs leading-relaxed"
+                      className="px-3 py-2 text-xs leading-relaxed text-on-surface"
                       style={{
                         backgroundColor: 'oklch(0 0 0 / 0.35)',
-                        color: 'var(--text-primary)',
                         borderBottom: '1px solid oklch(0.22 0.008 250)',
                         whiteSpace: 'pre-wrap',
                         wordBreak: 'break-word',
@@ -161,14 +149,7 @@ export default function LogPanel({ logs, loading, onRefresh }: LogPanelProps) {
           </div>
         </div>
       ) : (
-        <div
-          className="rounded-lg p-3 font-mono text-xs"
-          style={{
-            backgroundColor: 'var(--surface-overlay)',
-            minHeight: '200px',
-            color: 'var(--text-muted)',
-          }}
-        >
+        <div className="rounded-lg p-3 font-mono text-xs bg-surface-container text-on-surface-variant" style={{ minHeight: '200px' }}>
           Presione "Refrescar" para cargar los logs del servidor.
         </div>
       )}

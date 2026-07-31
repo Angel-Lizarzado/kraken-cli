@@ -16,7 +16,7 @@ const { runStep2 }  = require('./steps/step2-shuffle');
 const { runStep3 }  = require('./steps/step3-scorched');
 const { runStep4 }  = require('./steps/step4-reinstall');
 const { runStep5 }  = require('./steps/step5-update');
-const { runStep6 }  = require('./steps/step6-elementor');
+const { runStep6 }  = require('./steps/step6-plugin');
 const { runStep7 }  = require('./steps/step7-perms');
 const { runStep8 }  = require('./steps/step8-secure');
 const { runStep9 }  = require('./steps/step9-config');
@@ -69,7 +69,7 @@ async function reconstructDomain({
   signal,
 }) {
   const steps = [];
-  const TOTAL = mode === 'security-only' ? 2 : mode === 'core-only' ? 4 : 10;
+  const TOTAL = mode === 'security-only' ? 2 : mode === 'core-only' ? 4 : mode === 'solo-plugin' ? 3 : 10;
 
   function emit(num, msg, level = 'info') {
     console.log(`[Reconstructor|${domain}] Step ${num}/${TOTAL}: ${msg}`);
@@ -111,6 +111,11 @@ async function reconstructDomain({
 
     if (mode === 'security-only') {
       await runStep2(ctx);
+      return { success: true, steps };
+    }
+
+    if (mode === 'solo-plugin') {
+      await runStep6(ctx, elementorZipPath);
       return { success: true, steps };
     }
 

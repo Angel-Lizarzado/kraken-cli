@@ -186,6 +186,10 @@ export interface SshCredentials {
 
 // ── Config data type ──
 export interface ConfigData {
+  googleDrive?: {
+    credentialsPath?: string;
+    rootFolderId?: string;
+  };
   sshKeys: {
     privateKeyPath: string;
     publicKeyPath: string;

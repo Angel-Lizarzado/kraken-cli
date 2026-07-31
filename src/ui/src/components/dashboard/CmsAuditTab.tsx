@@ -1,50 +1,20 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Search, Play, Square, CheckCircle, XCircle, AlertTriangle, ChevronDown } from 'lucide-react';
+import type { LogLevel } from '../../types/ipc';
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-interface AuditEntry {
-  domain: string;
-  isWp: boolean | null;
-  wpVersion?: string;
-  checksumOk?: boolean;
-  pluginCount?: number;
-  phpHandler?: string;
-  error?: string;
-}
+// ── Types ─────────────────────────────────────────────────────────────────────
 
-interface DomainReconEntry {
+interface DomainEntry {
   domain: string;
   status: 'idle' | 'running' | 'success' | 'error';
   steps: Array<{ msg: string; level: string }>;
   error?: string;
+  duration?: number;
 }
 
-type CmsMode = 'full' | 'core-only' | 'security-only';
-type Phase = 'idle' | 'auditing' | 'results' | 'rebuilding';
+type CmsMode = 'full' | 'core-only' | 'security-only' | 'solo-plugin';
 
-interface PhpVersion {
-  version: string;
-  idCrudo: string;
-  etiqueta?: string;
-  etiquetaCompleta?: string;
-  esUltima?: boolean;
-}
-
-interface AuditProgress {
-  type: string;
-  msg?: string;
-  total?: number;
-  processed?: number;
-  domain?: string;
-  isWp?: boolean;
-  wpVersion?: string;
-  checksumOk?: boolean;
-  pluginCount?: number;
-  phpHandler?: string;
-  error?: string;
-  results?: AuditEntry[];
-}
+interface WpVersion { version: string; estado: string; esUltima?: boolean; }
 
 interface CmsProgress {
   type: string;
@@ -53,72 +23,129 @@ interface CmsProgress {
   level?: string;
   success?: boolean;
   duration?: number;
+  total?: number;
 }
 
-interface Props {
-  server: any;
+interface Props { onLog: (msg: string, type?: LogLevel) => void }
+
+// ── Badge component ───────────────────────────────────────────────────────────
+
+function StatusBadge({ status }: { status: DomainEntry['status'] }) {
+  const map = {
+    idle:    { label: 'Pendiente', color: '#a5a5a5',    bg: 'rgba(255, 255, 255, 0.05)' },
+    running: { label: '⟳ Procesando', color: '#f59e0b',         bg: 'oklch(0.55 0.15 75 / 0.15)' },
+    success: { label: '✓ OK',       color: '#33d9b2', bg: 'rgba(51, 217, 178, 0.12)' },
+    error:   { label: '✗ Error',    color: '#ff5252',   bg: 'rgba(255, 82, 82, 0.12)' },
+  };
+  const s = map[status];
+  return (
+    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full"
+      style={{ color: s.color, backgroundColor: s.bg, border: `1px solid ${s.color}30` }}>
+      {s.label}
+    </span>
+  );
 }
 
-// ── Component ──────────────────────────────────────────────────────────────────
-export default function CmsAuditTab({ server }: Props) {
+// ── Main component ────────────────────────────────────────────────────────────
+
+export default function CmsAuditTab({ server }: { server: any }) {
+  const onLog = (msg: string, type?: string) => console.log(msg);
+  const serverName = server.name;
   const api = (window as any).api;
 
-  // Audit state
-  const [phase, setPhase] = useState<Phase>('idle');
-  const [auditResults, setAuditResults] = useState<AuditEntry[]>([]);
-  const [auditMsg, setAuditMsg] = useState('');
-  const [auditTotal, setAuditTotal] = useState(0);
-  const [auditProcessed, setAuditProcessed] = useState(0);
-
-  // Selection
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-
-  // Rebuild config
-  const [mode, setMode] = useState<CmsMode>('full');
-  const [targetPhpVersion, setTargetPhpVersion] = useState('');
+  // Config
+    const [domainsRaw, setDomainsRaw]   = useState('');
   const [localZipPath, setLocalZipPath] = useState('');
-  const [dryRun, setDryRun] = useState(false);
-  const [versionesPHP, setVersionesPHP] = useState<PhpVersion[]>([]);
+  const [targetPhpVersion, setTargetPhpVersion] = useState('Mantener actual');
+  const [mode, setMode]               = useState<CmsMode>('full');
+  const [dryRun, setDryRun]           = useState(false);
+  const [phpSwitch, setPhpSwitch]     = useState(false);
+  const [servers, setServers]         = useState<string[]>([]);
+  
+  // Audit Table State
+  const [auditPhase, setAuditPhase]   = useState<'idle' | 'auditing' | 'results'>('idle');
+  const [auditResults, setAuditResults] = useState<any[]>([]);
+  const [selectedDomains, setSelectedDomains] = useState<Set<string>>(new Set());
+  const [auditMsg, setAuditMsg]       = useState('');
+  
+  // Versions
+  const [versionesPHP, setVersionesPHP] = useState<any[]>([]);
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
-  const [errorConexion, setErrorConexion] = useState<string | null>(null);
 
-  // Rebuild progress
-  const [reconEntries, setReconEntries] = useState<DomainReconEntry[]>([]);
+  // Runtime
+  const [isRunning, setIsRunning]     = useState(false);
+  const [entries, setEntries]         = useState<DomainEntry[]>([]);
   const [openDomains, setOpenDomains] = useState<Set<string>>(new Set());
+  const [filterFailed, setFilterFailed] = useState(false);
+  const [globalMsg, setGlobalMsg]     = useState('');
 
-  // Filter
-  const [filterIssues, setFilterIssues] = useState(false);
-  const [filterText, setFilterText] = useState('');
+  // Stats
+  const succeeded = entries.filter(e => e.status === 'success').length;
+  const failed    = entries.filter(e => e.status === 'error').length;
+  const running   = entries.filter(e => e.status === 'running').length;
+  const total     = entries.length;
 
-  // Derived
-  const wpSites = auditResults.filter(r => r.isWp);
-  const issueCount = wpSites.filter(r => !r.checksumOk || (r.pluginCount ?? 0) > 0 || r.error).length;
-  const reconSucceeded = reconEntries.filter(e => e.status === 'success').length;
-  const reconFailed = reconEntries.filter(e => e.status === 'error').length;
-
-  // Filtered table rows
-  const visibleRows = auditResults.filter(r => {
-    if (!r.isWp) return false;
-    if (filterText && !r.domain.includes(filterText)) return false;
-    if (filterIssues && r.checksumOk && (r.pluginCount ?? 0) === 0 && !r.error) return false;
-    return true;
-  });
-
-  // Audit progress listener
+  // Hydrate persisted state
   useEffect(() => {
-    const handler = (ev: AuditProgress) => {
+    api?.invoke('cms:get-state').then((res: any) => {
+      if (!res?.state) return;
+      const s = res.state;
+      // Solo restaurar si el estado pertenece a este servidor (evita cruce con el Reconstructor Global u otros nodos)
+      if (s.history?.length > 0 && s.serverName === serverName) {
+        setEntries(s.history.map((h: any) => ({
+          domain: h.domain,
+          status: h.status === 'success' ? 'success' : 'error',
+          steps: h.error ? [{ msg: h.error, level: 'error' }] : [],
+          error: h.error,
+          duration: h.duration,
+        })));
+      }
+      if (s.isRunning && s.serverName === serverName) setIsRunning(true);
+    }).catch(() => {});
+  }, []);
+
+  // Hydrate versions when server changes
+  useEffect(() => {
+    if (!serverName) {
+      setVersionesPHP([]);
+      return;
+    }
+    setIsLoadingVersions(true);
+    api?.invoke('reconstructor:obtener-versiones', { serverName })
+      .then((res: any) => {
+        if (res?.success && res.versiones?.php?.exito) {
+          setVersionesPHP(res.versiones.php.versiones || []);
+          if (res.versiones.php.versiones?.length > 0) {
+            setTargetPhpVersion(res.versiones.php.versiones[0].idCrudo);
+          }
+        } else {
+          setVersionesPHP([]);
+        }
+      })
+      .catch(() => {
+        setVersionesPHP([]);
+      })
+      .finally(() => {
+        setIsLoadingVersions(false);
+      });
+  }, [serverName]);
+
+  // Fix 4.5: Prevenir duplicado de eventos de auditoría
+  const auditOwner = useRef(false);
+
+  // Audit Progress Listener
+  useEffect(() => {
+    const handler = (ev: any) => {
+      if (!auditOwner.current) return;
       if (!ev) return;
       if (ev.type === 'audit-start') { setAuditMsg(ev.msg || ''); return; }
-      if (ev.type === 'audit-domains-found') { setAuditTotal(ev.total || 0); setAuditMsg(ev.msg || ''); return; }
+      if (ev.type === 'audit-domains-found') { setAuditMsg(ev.msg || ''); return; }
       if (ev.type === 'domain-audited') {
-        setAuditProcessed(ev.processed || 0);
         if (ev.isWp !== false && ev.domain) {
           setAuditResults(prev => {
-            const entry: AuditEntry = {
-              domain: ev.domain!,
-              isWp: ev.isWp ?? null,
+            const entry = {
+              domain: ev.domain,
               wpVersion: ev.wpVersion,
-              checksumOk: ev.checksumOk,
               pluginCount: ev.pluginCount,
               phpHandler: ev.phpHandler,
               error: ev.error,
@@ -131,425 +158,472 @@ export default function CmsAuditTab({ server }: Props) {
         return;
       }
       if (ev.type === 'audit-done') {
-        setPhase('results');
+        setAuditPhase('results');
         setAuditMsg(ev.msg || '');
-        if (ev.results) setAuditResults(ev.results.filter(r => r.isWp));
+        if (ev.results) setAuditResults(ev.results.filter((r: any) => r.isWp));
+        auditOwner.current = false;
         return;
       }
-      if (ev.type === 'audit-error') { setPhase('results'); setAuditMsg(`Error: ${ev.msg}`); return; }
+      if (ev.type === 'audit-error') { 
+        setAuditPhase('results'); 
+        setAuditMsg(`Error: ${ev.msg}`); 
+        auditOwner.current = false;
+        return; 
+      }
     };
     api?.receive('cms:audit-progress', handler);
     return () => { api?.removeListener?.('cms:audit-progress', handler); };
   }, []);
 
-  // Fetch PHP versions when server changes
+  // Fix 4: Prevenir duplicado de eventos cuando CmsAuditTab está activo.
+  // Este módulo solo procesa eventos si FUE ÉL quien inició el batch.
+  const batchOwner = useRef(false);
+
+  // cms:progress listener
   useEffect(() => {
-    if (!server) {
-      setVersionesPHP([]);
-      setErrorConexion(null);
-      setIsLoadingVersions(false);
-      return;
-    }
+    const handler = (event: CmsProgress) => {
+      // Ignorar eventos si el batch fue iniciado por CmsAuditTab, no por este módulo
+      if (!batchOwner.current) return;
+      if (!event) return;
 
-    console.log('[SSH RECONSTRUCT] Enviando configuración completa:', server);
-
-    setVersionesPHP([]);
-    setErrorConexion(null);
-    setIsLoadingVersions(true);
-
-    (window as any).krakenAPI?.php?.obtenerVersiones(server)
-      .then((respuesta: any) => {
-        if (!respuesta || respuesta.exito === false) {
-          throw new Error(respuesta?.error || 'El servidor reportó un error al escanear versiones de PHP.');
-        }
-
-        const listaPHP = respuesta.versiones || [];
-        if (listaPHP.length > 0) {
-          // Filtrar cualquier duplicado manual de 'Mantener actual' que venga del backend
-          const filtrado = listaPHP.filter((v: any) => v.version !== 'Mantener actual' && v.idCrudo !== 'Mantener actual');
-          setVersionesPHP(filtrado);
-        } else {
-          throw new Error('No se detectaron versiones de PHP habilitadas en el servidor.');
-        }
-      })
-      .catch((err: any) => {
-        const mensajeError = err.message || 'Error de conexión con el canal IPC del backend';
-        setErrorConexion(mensajeError);
-        setVersionesPHP([]);
-        console.error('[FRONTEND IPC ERROR]:', err);
-      })
-      .finally(() => setIsLoadingVersions(false));
-  }, [server]);
-
-  // Recon progress listener
-  useEffect(() => {
-    const handler = (ev: CmsProgress) => {
-      if (!ev || !ev.domain) return;
-      if (ev.type === 'domain-start') {
-        setOpenDomains(prev => new Set([...prev, ev.domain!]));
-        setReconEntries(prev => {
-          const exists = prev.find(e => e.domain === ev.domain);
-          if (exists) return prev.map(e => e.domain === ev.domain ? { ...e, status: 'running', steps: [] } : e);
-          return [...prev, { domain: ev.domain!, status: 'running', steps: [] }];
-        });
+      if (event.type === 'batch-start') {
+        setGlobalMsg(event.msg || '');
+        setIsRunning(true);
         return;
       }
-      if (ev.type === 'upload-start' || ev.type === 'upload-done') {
-        // Mostrar como un "dominio falso" para que el usuario vea el progreso del ZIP
+      if (event.type === 'batch-done') {
+        setGlobalMsg(event.msg || '');
+        setIsRunning(false);
+        batchOwner.current = false; // liberar ownership
+        return;
+      }
+      if (event.type === 'php-switch') {
+        setGlobalMsg(event.msg || '');
+        return;
+      }
+      
+      if (event.type === 'upload-start' || event.type === 'upload-done') {
         const uploadKey = '__upload_elementor__';
         setOpenDomains(prev => new Set([...prev, uploadKey]));
-        setReconEntries(prev => {
+        setEntries(prev => {
           const exists = prev.find(e => e.domain === uploadKey);
-          const stepMsg = { msg: ev.msg || 'Subiendo Elementor...', level: ev.level || 'info' };
+          const stepMsg = { msg: event.msg || 'Subiendo Elementor...', level: event.level || 'info' };
           
           if (exists) {
             return prev.map(e => e.domain === uploadKey 
-              ? { ...e, status: ev.type === 'upload-done' ? 'success' : 'running', steps: [...e.steps, stepMsg] } 
+              ? { ...e, status: event.type === 'upload-done' ? 'success' : 'running', steps: [...e.steps, stepMsg] } 
               : e);
           }
-          return [{ domain: uploadKey, status: ev.type === 'upload-done' ? 'success' : 'running', steps: [stepMsg] }, ...prev];
+          return [{ domain: uploadKey, status: event.type === 'upload-done' ? 'success' : 'running', steps: [stepMsg] }, ...prev];
+        });
+        setGlobalMsg(event.msg || '');
+        return;
+      }
+
+      const domain = event.domain;
+      if (!domain) return;
+
+      if (event.type === 'domain-start') {
+        setOpenDomains(prev => new Set([...prev, domain]));
+        setEntries(prev => {
+          const exists = prev.find(e => e.domain === domain);
+          if (exists) return prev.map(e => e.domain === domain ? { ...e, status: 'running', steps: [] } : e);
+          return [...prev, { domain, status: 'running', steps: [] }];
         });
         return;
       }
-      if (ev.type === 'domain-step') {
-        setReconEntries(prev => prev.map(e =>
-          e.domain === ev.domain ? { ...e, steps: [...e.steps, { msg: ev.msg || '', level: ev.level || 'info' }] } : e
+
+      if (event.type === 'domain-step') {
+        setEntries(prev => prev.map(e =>
+          e.domain === domain
+            ? { ...e, steps: [...e.steps, { msg: event.msg || '', level: event.level || 'info' }] }
+            : e
         ));
         return;
       }
-      if (ev.type === 'domain-done') {
-        setReconEntries(prev => prev.map(e => e.domain === ev.domain ? { ...e, status: 'success' } : e));
-        setOpenDomains(prev => { const n = new Set(prev); n.delete(ev.domain!); return n; });
-        // Actualización optimista: Mutar el auditResults local para que la fila desaparezca si se filtra por "problemas"
-        setAuditResults(prev => prev.map(r => 
-          r.domain === ev.domain ? { ...r, checksumOk: true, pluginCount: 0, error: undefined } : r
+
+      if (event.type === 'domain-done') {
+        setEntries(prev => prev.map(e =>
+          e.domain === domain
+            ? { ...e, status: 'success', duration: event.duration }
+            : e
+        ));
+        setOpenDomains(prev => { const n = new Set(prev); n.delete(domain); return n; });
+        return;
+      }
+
+      if (event.type === 'domain-error') {
+        setEntries(prev => prev.map(e =>
+          e.domain === domain
+            ? { ...e, status: 'error', error: event.msg, duration: event.duration }
+            : e
         ));
         return;
       }
-      if (ev.type === 'domain-error') {
-        setReconEntries(prev => prev.map(e => e.domain === ev.domain ? { ...e, status: 'error', error: ev.msg } : e));
-        return;
-      }
-      if (ev.type === 'batch-done') { setPhase('results'); return; }
     };
+
     api?.receive('cms:progress', handler);
-    return () => { api?.removeListener?.('cms:progress', handler); };
+    return () => { api?.removeListener('cms:progress', handler); };
   }, []);
 
+  // ── Actions ───────────────────────────────────────────────────────────────
+
   const handleAudit = useCallback(async () => {
-    if (!server) return;
-    setPhase('auditing');
+    if (!serverName) return;
+    auditOwner.current = true;
+    setAuditPhase('auditing');
     setAuditResults([]);
-    setAuditProcessed(0);
-    setAuditTotal(0);
-    setSelected(new Set());
-    setReconEntries([]);
-    await api?.invoke('cms:audit-server', { serverName: server.name });
-  }, [server]);
+    setSelectedDomains(new Set());
+    setAuditMsg('');
+    await api?.invoke('cms:audit-server', { serverName });
+  }, [serverName]);
+
+  const handleStart = useCallback(async () => {
+    const domains = [...selectedDomains];
+    if (!domains.length) return;
+    if (!serverName) return;
+
+    batchOwner.current = true; // Fix 4: este módulo es el dueño del batch
+    setEntries(domains.map(domain => ({ domain, status: 'idle', steps: [] })));
+    setOpenDomains(new Set());
+    setFilterFailed(false);
+    setGlobalMsg('');
+
+    const res = await api?.invoke('cms:start-batch', {
+      serverName, domains, localZipPath: localZipPath || null,
+      targetPhpVersion, mode, dryRun, phpSwitch,
+    });
+    if (!res?.success) {
+      batchOwner.current = false;
+      setGlobalMsg(`Error: ${res?.error || 'No se pudo iniciar'}`);
+      onLog(`[CMS] ${res?.error}`, 'error');
+    }
+  }, [serverName, selectedDomains, localZipPath, targetPhpVersion, mode, dryRun, phpSwitch, onLog]);
 
   const handleAbort = useCallback(async () => {
     await api?.invoke('cms:abort');
-    setPhase('results');
-  }, []);
+    setIsRunning(false);
+    if (auditPhase === 'auditing') {
+      setAuditPhase('results');
+      setAuditMsg('⛔ Auditoría abortada por el usuario.');
+    }
+  }, [auditPhase]);
 
   const handlePickZip = useCallback(async () => {
-    const res = await api?.invoke('dialog:open-file', {
-      title: 'Seleccionar ZIP de Elementor Pro',
+    const result = await api?.invoke('dialog:open-file', {
+      title: 'Seleccionar ZIP Plugin',
       filters: [{ name: 'ZIP', extensions: ['zip'] }],
     });
-    if (res?.filePath) setLocalZipPath(res.filePath);
+    if (result?.filePath) setLocalZipPath(result.filePath);
   }, []);
 
-  const handleStartRecon = useCallback(async () => {
-    if (!selected.size || phase === 'rebuilding' || !server) return;
-    const domains = [...selected];
-    setReconEntries(domains.map(d => ({ domain: d, status: 'idle', steps: [] })));
-    setOpenDomains(new Set());
-    setPhase('rebuilding');
-    await api?.invoke('cms:start-batch', {
-      serverName: server.name, domains, localZipPath: localZipPath || null,
-      targetPhpVersion, mode, dryRun,
+  const exportCsv = useCallback(() => {
+    const rows = ['dominio,estado,duracion_s,error'];
+    entries.forEach(e => {
+      rows.push([e.domain, e.status, ((e.duration || 0) / 1000).toFixed(1), e.error || ''].join(','));
     });
-  }, [selected, server, localZipPath, targetPhpVersion, mode, dryRun, phase]);
-
-  const toggleAll = () => {
-    if (selected.size === visibleRows.length) setSelected(new Set());
-    else setSelected(new Set(visibleRows.map(r => r.domain)));
-  };
+    const blob = new Blob([rows.join('\n')], { type: 'text/csv' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `cms-report-${Date.now()}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  }, [entries]);
 
   const toggleDomain = (domain: string) => {
-    setOpenDomains(prev => { const n = new Set(prev); n.has(domain) ? n.delete(domain) : n.add(domain); return n; });
+    setOpenDomains(prev => {
+      const n = new Set(prev);
+      n.has(domain) ? n.delete(domain) : n.add(domain);
+      return n;
+    });
   };
 
-  const auditPct = auditTotal > 0 ? Math.round((auditProcessed / auditTotal) * 100) : 0;
+  const domains = [...selectedDomains];
+  const visibleEntries = filterFailed ? entries.filter(e => e.status === 'error') : entries;
 
-  // ── IDLE: pantalla de inicio ────────────────────────────────────────────────
-  if (phase === 'idle') {
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-5 py-16">
-        <div style={{ color: 'var(--text-muted)' }}>
-          <Search size={40} strokeWidth={1.2} />
-        </div>
-        <div className="text-center">
-          <h3 className="font-semibold text-sm">Auditoría de Flota WordPress</h3>
-          <p className="text-xs mt-1" style={{ color: 'var(--text-muted)' }}>
-            Detecta todos los sitios WP en <strong>{server?.name}</strong> y audita su estado de integridad, plugins y PHP.
-          </p>
-        </div>
-        <button onClick={handleAudit} disabled={!server}
-          className="btn btn--primary flex items-center gap-2">
-          <Search size={14} /> Escanear Flota WordPress
-        </button>
-      </div>
-    );
-  }
+  return (
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-6 space-y-5">
 
-  // ── AUDITING: progreso del escaneo ─────────────────────────────────────────
-  if (phase === 'auditing') {
-    return (
-      <div className="flex flex-col gap-4 p-6">
+        {/* ── Header ── */}
         <div className="flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold">Auditando flota...</h3>
-            <p className="text-xs mt-0.5 font-mono" style={{ color: 'var(--text-muted)' }}>{auditMsg}</p>
+            <h1 className="font-display text-xl font-bold">CMS Reconstructor</h1>
+            <p className="text-xs mt-0.5" style={{ color: '#a5a5a5' }}>
+              Reconstrucción industrial de WordPress — hasta 600 dominios
+            </p>
           </div>
-          <button onClick={handleAbort} className="btn text-xs flex items-center gap-1.5"
-            style={{ backgroundColor: 'var(--color-error)', color: '#fff' }}>
-            <Square size={11} /> Abortar
-          </button>
-        </div>
-
-        {/* Barra global */}
-        <div>
-          <div className="flex justify-between text-[10px] mb-1.5 font-mono" style={{ color: 'var(--text-muted)' }}>
-            <span>{auditProcessed} / {auditTotal || '?'} dominios</span>
-            <span>{auditPct}%</span>
-          </div>
-          <div style={{ height: 6, borderRadius: 3, backgroundColor: 'var(--surface-overlay)' }}>
-            <div style={{
-              height: '100%', borderRadius: 3,
-              width: `${auditTotal > 0 ? auditPct : 30}%`,
-              backgroundColor: 'var(--color-accent)',
-              transition: 'width 300ms ease-out',
-              animation: auditTotal === 0 ? 'pulse 1.5s ease infinite' : undefined,
-            }} />
+          <div className="flex items-center gap-2">
+            {entries.length > 0 && (
+              <button onClick={exportCsv} className="btn btn--ghost text-xs">
+                Exportar CSV
+              </button>
+            )}
+            {isRunning || auditPhase === 'auditing' ? (
+              <button onClick={handleAbort} className="btn text-xs font-medium bg-error text-white">
+                ⛔ Abortar
+              </button>
+            ) : (
+              <button onClick={handleStart} disabled={!domains.length || !serverName || isLoadingVersions}
+                className="btn btn--primary text-xs font-medium">
+                {isLoadingVersions ? '⏳ Cargando...' : '🚀 Iniciar Reconstrucción'}
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Live feed: últimos dominios detectados */}
-        {auditResults.length > 0 && (
-          <div className="card p-3 space-y-0.5" style={{ maxHeight: 200, overflowY: 'auto' }}>
-            {[...auditResults].reverse().slice(0, 20).map(r => (
-              <div key={r.domain} className="flex items-center gap-2 text-[10px] font-mono">
-                {r.error ? <XCircle size={10} style={{ color: 'var(--color-error)' }} /> : <CheckCircle size={10} style={{ color: 'var(--color-success)' }} />}
-                <span style={{ color: 'var(--text-secondary)' }}>{r.domain}</span>
-                {r.wpVersion && <span style={{ color: 'var(--text-muted)' }}>WP {r.wpVersion}</span>}
+        {/* ── Progress dashboard (visible cuando hay entradas) ── */}
+        {entries.length > 0 && (
+          <div className="card p-4">
+            <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
+              {[
+                { label: 'Total',     value: total,     color: '#ffffff' },
+                { label: '✅ OK',     value: succeeded, color: '#33d9b2' },
+                { label: '❌ Error',  value: failed,    color: '#ff5252' },
+                { label: '⟳ Activos',value: running,   color: '#f59e0b' },
+              ].map(s => (
+                <div key={s.label} className="text-center">
+                  <div className="text-2xl font-bold font-mono" style={{ color: s.color }}>{s.value}</div>
+                  <div className="text-xs mt-0.5" style={{ color: '#a5a5a5' }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            {total > 0 && (
+              <div className="mt-3" style={{ height: 4, borderRadius: 2, backgroundColor: 'rgba(255, 255, 255, 0.05)' }}>
+                <div style={{
+                  height: '100%', borderRadius: 2,
+                  width: `${((succeeded + failed) / total) * 100}%`,
+                  backgroundColor: failed > 0 ? '#ff5252' : '#33d9b2',
+                  transition: 'width 400ms ease-out',
+                }} />
               </div>
-            ))}
+            )}
+            {globalMsg && (
+              <p className="text-xs mt-2 font-mono" style={{ color: '#a5a5a5' }}>{globalMsg}</p>
+            )}
           </div>
         )}
-      </div>
-    );
-  }
 
-  // ── RESULTS / REBUILDING ────────────────────────────────────────────────────
-  return (
-    <div className="flex flex-col gap-4 p-4 overflow-y-auto h-full">
+        <div className="grid gap-5" style={{ gridTemplateColumns: '340px 1fr' }}>
+          {/* ── Config panel ── */}
+          <div className="card p-4 space-y-4">
+            <h2 className="text-xs font-semibold uppercase tracking-wider" style={{ color: '#a5a5a5' }}>
+              Configuración
+            </h2>
 
-      {/* Stats bar */}
-      <div className="flex items-center gap-4 flex-wrap">
-        {[
-          { label: 'WP encontrados', value: wpSites.length, color: 'var(--text-primary)' },
-          { label: 'Con problemas', value: issueCount, color: 'var(--color-error)' },
-          { label: 'Seleccionados', value: selected.size, color: 'var(--color-accent)' },
-        ].map(s => (
-          <div key={s.label} className="flex items-center gap-2">
-            <span className="text-xl font-bold font-mono" style={{ color: s.color }}>{s.value}</span>
-            <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>{s.label}</span>
-          </div>
-        ))}
-        <div className="ml-auto flex items-center gap-2">
-          <button onClick={handleAudit} className="btn btn--ghost text-xs flex items-center gap-1">
-            <Search size={12} /> Re-escanear
-          </button>
-        </div>
-      </div>
+            
 
-      {/* Filter bar */}
-      <div className="flex items-center gap-2">
-        <input value={filterText} onChange={e => setFilterText(e.target.value)}
-          placeholder="Filtrar dominios..." className="input text-xs flex-1" />
-        <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: 'var(--text-secondary)' }}>
-          <input type="checkbox" checked={filterIssues} onChange={e => setFilterIssues(e.target.checked)} />
-          Solo con problemas
-        </label>
-      </div>
-
-      {/* Data grid */}
-      <div className="card overflow-auto" style={{ maxHeight: 300 }}>
-        <table className="w-full text-[11px]">
-          <thead>
-            <tr style={{ borderBottom: '1px solid var(--border-default)' }}>
-              <th className="px-3 py-2 text-left w-8">
-                <input type="checkbox"
-                  checked={selected.size > 0 && selected.size === visibleRows.length}
-                  onChange={toggleAll} />
-              </th>
-              {['Dominio', 'WP Ver.', 'Checksums', 'Plugins', 'PHP'].map(h => (
-                <th key={h} className="px-3 py-2 text-left font-medium"
-                  style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map(row => {
-              const hasIssue = !row.checksumOk || (row.pluginCount ?? 0) > 0 || !!row.error;
-              return (
-                <tr key={row.domain}
-                  onClick={() => setSelected(prev => {
-                    const n = new Set(prev);
-                    n.has(row.domain) ? n.delete(row.domain) : n.add(row.domain);
-                    return n;
-                  })}
-                  style={{
-                    borderBottom: '1px solid var(--border-default)',
-                    backgroundColor: selected.has(row.domain) ? 'var(--color-accent-bg)' : 'transparent',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <td className="px-3 py-2">
-                    <input type="checkbox" checked={selected.has(row.domain)} readOnly />
-                  </td>
-                  <td className="px-3 py-2 font-mono" style={{ color: 'var(--text-primary)' }}>
-                    {row.domain}
-                    {hasIssue && <AlertTriangle size={9} className="inline ml-1.5" style={{ color: 'var(--color-warning)' }} />}
-                  </td>
-                  <td className="px-3 py-2 font-mono" style={{ color: 'var(--text-secondary)' }}>
-                    {row.wpVersion || '?'}
-                  </td>
-                  <td className="px-3 py-2">
-                    {row.checksumOk
-                      ? <CheckCircle size={12} style={{ color: 'var(--color-success)' }} />
-                      : <XCircle size={12} style={{ color: 'var(--color-error)' }} />}
-                  </td>
-                  <td className="px-3 py-2 font-mono" style={{ color: (row.pluginCount ?? 0) > 0 ? 'var(--color-warning)' : 'var(--text-muted)' }}>
-                    {row.pluginCount ?? 0}
-                  </td>
-                  <td className="px-3 py-2 font-mono" style={{ color: 'var(--text-muted)' }}>
-                    {row.phpHandler ? row.phpHandler.replace(/.*plesk-php|\/php.*/, '').trim() : '?'}
-                  </td>
-                </tr>
-              );
-            })}
-            {visibleRows.length === 0 && (
-              <tr><td colSpan={6} className="px-3 py-8 text-center text-xs" style={{ color: 'var(--text-muted)' }}>
-                Sin resultados
-              </td></tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Rebuild panel — visible cuando hay selección */}
-      {selected.size > 0 && phase !== 'rebuilding' && (
-        <div className="card p-4">
-          <h4 className="text-xs font-semibold mb-3">
-            Reconstrucción — {selected.size} sitio{selected.size !== 1 ? 's' : ''}
-          </h4>
-          <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr 1fr' }}>
-            <div>
-              <label className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Modo</label>
-              <select value={mode} onChange={e => setMode(e.target.value as CmsMode)} className="input text-xs w-full mt-1">
-                <option value="full">Full (WP + Elementor)</option>
-                <option value="core-only">Solo Core WP</option>
-                <option value="security-only">Solo Seguridad</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-[10px] flex justify-between" style={{ color: 'var(--text-muted)' }}>
+            {/* Versión PHP Destino */}
+            <div className="space-y-1">
+              <label className="text-xs font-medium flex justify-between text-on-surface-variant">
                 <span>Versión PHP Destino</span>
-                {isLoadingVersions ? (
-                  <span className="animate-pulse" style={{ color: 'var(--color-accent)' }}>Cargando versiones...</span>
-                ) : errorConexion ? (
-                  <span style={{ color: 'var(--color-error)' }}>No se pudieron obtener versiones</span>
-                ) : null}
+                {isLoadingVersions && <span className="animate-pulse text-tertiary">Cargando...</span>}
               </label>
               <select value={targetPhpVersion} onChange={e => setTargetPhpVersion(e.target.value)}
-                className="input text-xs w-full mt-1" disabled={isLoadingVersions || versionesPHP.length === 0}>
-                <option value="">Mantener actual</option>
-                {versionesPHP.map(manejador => (
-                  <option key={manejador.version} value={manejador.idCrudo}>
-                    PHP {manejador.version} — {manejador.etiquetaCompleta}
-                  </option>
-                ))}
+                className="input text-xs w-full" disabled={isLoadingVersions || versionesPHP.length === 0}>
+                {versionesPHP.length === 0 ? (
+                  <option value="Mantener actual">Mantener actual</option>
+                ) : (
+                  <>
+                    <option value="Mantener actual">Mantener actual</option>
+                    {versionesPHP.map(v => (
+                      <option key={v.idCrudo} value={v.idCrudo}>
+                        {v.version} — {v.etiquetaCompleta}
+                      </option>
+                    ))}
+                  </>
+                )}
               </select>
             </div>
-            {mode === 'full' && (
-              <div>
-                <label className="text-[10px]" style={{ color: 'var(--text-muted)' }}>ZIP Elementor Pro</label>
-                <div className="flex gap-1 mt-1">
-                  <input value={localZipPath} readOnly placeholder="Seleccionar .zip"
-                    className="input text-[10px] flex-1 font-mono" />
-                  <button onClick={handlePickZip} className="btn btn--ghost text-xs px-2">📂</button>
+
+            {/* Modo */}
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-on-surface-variant">Modo</label>
+              <div className="grid gap-1" style={{ gridTemplateColumns: 'repeat(2, 1fr)' }}>
+                {(['full', 'core-only', 'security-only', 'solo-plugin'] as CmsMode[]).map(m => (
+                  <button key={m} onClick={() => setMode(m)}
+                    className="text-[10px] px-2 py-1.5 rounded-md transition-all"
+                    style={{
+                      backgroundColor: mode === m ? 'rgba(52, 172, 224, 0.2)' : 'rgba(255, 255, 255, 0.05)',
+                      color: mode === m ? '#34ace0' : '#a5a5a5',
+                      border: `1px solid ${mode === m ? '#34ace0' : 'rgba(255, 255, 255, 0.1)'}`,
+                    }}>
+                    {m === 'full' ? 'Full' : m === 'core-only' ? 'Solo Core' : m === 'security-only' ? 'Solo Seguridad' : 'Solo Plugin'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* ZIP Plugin */}
+            {(mode === 'full' || mode === 'solo-plugin') && (
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-on-surface-variant">
+                  ZIP Plugin
+                </label>
+                <div className="flex gap-1.5">
+                  <input type="text" value={localZipPath} onChange={e => setLocalZipPath(e.target.value)}
+                    placeholder="Ruta local del .zip" className="input text-[10px] flex-1 font-mono" readOnly />
+                  <button onClick={handlePickZip} className="btn btn--ghost text-xs px-2">
+                    📂
+                  </button>
                 </div>
               </div>
             )}
           </div>
-          <div className="flex items-center gap-4 mt-3">
-            <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-              <input type="checkbox" checked={dryRun} onChange={e => setDryRun(e.target.checked)} />
-              <span style={{ color: 'var(--text-secondary)' }}>Dry Run (sin cambios reales)</span>
-            </label>
-            <button onClick={handleStartRecon} className="btn btn--primary text-xs ml-auto flex items-center gap-1.5">
-              <Play size={11} /> {dryRun ? 'Dry Run' : 'Ejecutar Reconstrucción'}
-            </button>
-          </div>
-        </div>
-      )}
 
-      {/* Recon progress when rebuilding */}
-      {phase === 'rebuilding' && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h4 className="text-xs font-semibold">
-              Reconstrucción en curso — {reconSucceeded} OK / {reconFailed} error / {reconEntries.length} total
-            </h4>
-            <button onClick={handleAbort} className="btn text-xs flex items-center gap-1"
-              style={{ backgroundColor: 'var(--color-error)', color: '#fff' }}>
-              <Square size={10} /> Abortar
-            </button>
-          </div>
-          {reconEntries.map(entry => (
-            <div key={entry.domain} className="card overflow-hidden">
-              <button onClick={() => toggleDomain(entry.domain)}
-                className="w-full flex items-center gap-3 px-3 py-2 text-left">
-                {entry.status === 'success' && <CheckCircle size={11} style={{ color: 'var(--color-success)' }} />}
-                {entry.status === 'error' && <XCircle size={11} style={{ color: 'var(--color-error)' }} />}
-                {entry.status === 'running' && <div className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ backgroundColor: '#f59e0b' }} />}
-                {entry.status === 'idle' && <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: 'var(--text-muted)' }} />}
-                <span className="text-[11px] font-mono flex-1" style={{ color: 'var(--text-primary)' }}>{entry.domain}</span>
-                <ChevronDown size={12} style={{ color: 'var(--text-muted)', transform: openDomains.has(entry.domain) ? 'rotate(180deg)' : 'none', transition: 'transform 150ms' }} />
+          {/* ── Domains Table ── */}
+          <div className="card p-4 space-y-2 flex flex-col" style={{ minHeight: 300 }}>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-on-surface-variant">
+                Dominios WP: {auditResults.length} / Seleccionados: {selectedDomains.size}
+              </label>
+              <button onClick={handleAudit} disabled={!serverName || auditPhase === 'auditing'}
+                className="btn btn--ghost text-xs">
+                {auditPhase === 'auditing' ? '⏳ Auditando...' : '🔍 Auditar Servidor'}
               </button>
-              <AnimatePresence initial={false}>
-                {openDomains.has(entry.domain) && (
-                  <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }}
-                    transition={{ duration: 0.12 }} style={{ overflow: 'hidden' }}>
-                    <div className="border-t px-3 py-2 space-y-0.5" style={{ borderColor: 'var(--border-default)', maxHeight: 160, overflowY: 'auto' }}>
-                      {entry.steps.map((s, i) => (
-                        <p key={i} className="text-[10px] font-mono" style={{
-                          color: s.level === 'error' ? 'var(--color-error)'
-                            : s.level === 'success' ? 'var(--color-success)'
-                              : 'var(--text-secondary)',
-                        }}>{s.msg}</p>
-                      ))}
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
             </div>
-          ))}
+            
+            <div className="flex-1 overflow-auto border rounded-md border-outline-variant">
+              <table className="w-full text-[10px]">
+                <thead style={{ backgroundColor: 'rgba(255, 255, 255, 0.05)' }}>
+                  <tr>
+                    <th className="px-3 py-1.5 text-left w-8">
+                      <input type="checkbox"
+                        checked={auditResults.length > 0 && selectedDomains.size === auditResults.length}
+                        onChange={() => {
+                          if (selectedDomains.size === auditResults.length) setSelectedDomains(new Set());
+                          else setSelectedDomains(new Set(auditResults.map(r => r.domain)));
+                        }} />
+                    </th>
+                    <th className="px-3 py-1.5 text-left font-medium" style={{ color: '#a5a5a5' }}>Dominio</th>
+                    <th className="px-3 py-1.5 text-left font-medium" style={{ color: '#a5a5a5' }}>WP Ver.</th>
+                    <th className="px-3 py-1.5 text-left font-medium" style={{ color: '#a5a5a5' }}>Plugins</th>
+                    <th className="px-3 py-1.5 text-left font-medium" style={{ color: '#a5a5a5' }}>PHP</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditResults.map(row => (
+                    <tr key={row.domain}
+                      onClick={() => {
+                        const n = new Set(selectedDomains);
+                        n.has(row.domain) ? n.delete(row.domain) : n.add(row.domain);
+                        setSelectedDomains(n);
+                      }}
+                      style={{
+                        borderBottom: '1px solid rgba(255, 255, 255, 0.1)',
+                        backgroundColor: selectedDomains.has(row.domain) ? 'rgba(52, 172, 224, 0.2)' : 'transparent',
+                        cursor: 'pointer',
+                      }}>
+                      <td className="px-3 py-1.5 border-t border-outline-variant">
+                        <input type="checkbox" checked={selectedDomains.has(row.domain)} readOnly />
+                      </td>
+                      <td className="px-3 py-1.5 border-t font-mono" style={{ borderColor: 'rgba(255, 255, 255, 0.1)', color: '#ffffff' }}>
+                        {row.domain}
+                      </td>
+                      <td className="px-3 py-1.5 border-t font-mono border-outline-variant text-on-surface-variant">
+                        {row.wpVersion || '?'}
+                      </td>
+                      <td className="px-3 py-1.5 border-t font-mono border-outline-variant text-on-surface-variant">
+                        {row.pluginCount ?? '?'}
+                      </td>
+                      <td className="px-3 py-1.5 border-t font-mono" style={{ borderColor: 'rgba(255, 255, 255, 0.1)', color: '#a5a5a5' }}>
+                        {row.phpHandler ? row.phpHandler.replace(/.*plesk-php|\/php.*/, '').trim() : '?'}
+                      </td>
+                    </tr>
+                  ))}
+                  {auditResults.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-3 py-8 text-center text-xs" style={{ color: '#a5a5a5' }}>
+                        {auditPhase === 'idle' ? 'Haz clic en Auditar Servidor para cargar dominios' : 'Sin dominios'}
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            {auditMsg && <p className="text-[10px] font-mono mt-2" style={{ color: '#a5a5a5' }}>{auditMsg}</p>}
+          </div>
         </div>
-      )}
+
+        {/* ── Terminal Accordion ── */}
+        {entries.length > 0 && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold">Progreso por dominio</h2>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input type="checkbox" checked={filterFailed} onChange={e => setFilterFailed(e.target.checked)}
+                  className="accent-tertiary" />
+                <span className="text-xs" style={{ color: '#a5a5a5' }}>
+                  Ver solo fallidos ({failed})
+                </span>
+              </label>
+            </div>
+
+            <div className="space-y-1.5">
+              {visibleEntries.map(entry => (
+                <div key={entry.domain} className="card overflow-hidden">
+                  {/* Accordion header */}
+                  <button
+                    onClick={() => toggleDomain(entry.domain)}
+                    className="w-full flex items-center gap-3 px-4 py-3 text-left"
+                    style={{ backgroundColor: 'transparent' }}
+                  >
+                    <StatusBadge status={entry.status} />
+                    <span className="text-xs font-mono flex-1" style={{ color: '#ffffff' }}>
+                      {entry.domain}
+                    </span>
+                    {entry.duration && (
+                      <span className="text-[10px] font-mono" style={{ color: '#a5a5a5' }}>
+                        {(entry.duration / 1000).toFixed(1)}s
+                      </span>
+                    )}
+                    <span style={{ color: '#a5a5a5', fontSize: 10 }}>
+                      {openDomains.has(entry.domain) ? '▲' : '▼'}
+                    </span>
+                  </button>
+
+                  {/* Accordion body */}
+                  <AnimatePresence initial={false}>
+                    {openDomains.has(entry.domain) && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        style={{ overflow: 'hidden' }}
+                      >
+                        <div className="border-t px-4 py-3 space-y-0.5 border-outline-variant max-h-[240px] overflow-y-auto">
+                          {entry.steps.length === 0 ? (
+                            <p className="text-[10px] font-mono" style={{ color: '#a5a5a5' }}>
+                              Esperando inicio...
+                            </p>
+                          ) : entry.steps.map((step, i) => {
+                            const color = step.level === 'error' ? '#ff5252'
+                              : step.level === 'success' ? '#33d9b2'
+                              : step.level === 'warn' ? '#ffb142'
+                              : '#d1d1d1';
+                            return (
+                              <p key={i} className="text-[10px] font-mono leading-relaxed"
+                                style={{ color, wordBreak: 'break-all' }}>
+                                {step.msg}
+                              </p>
+                            );
+                          })}
+                          {entry.status === 'running' && (
+                            <p className="text-[10px] font-mono animate-pulse" style={{ color: '#f59e0b' }}>
+                              ▌ Procesando...
+                            </p>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }

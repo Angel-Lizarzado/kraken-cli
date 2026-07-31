@@ -353,6 +353,191 @@ function registerConfigHandlers(ipcMain, mainWindow) {
       return { exito: false, error: error.message };
     }
   });
+  // Get Google Drive Config
+  ipcMain.handle('config:get-google-drive', async () => {
+    try {
+      const { getConfigManager } = require('../../services/config-manager');
+      let configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+      return { success: true, googleDrive: cfg?.googleDrive || { credentialsPath: '', rootFolderId: '' } };
+    } catch (error) {
+      console.error('Error getting Google Drive config:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Set Google Drive Root Folder ID
+  ipcMain.handle('config:set-drive-root', async (event, { rootFolderId }) => {
+    try {
+      const { getConfigManager } = require('../../services/config-manager');
+      let configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+      if (!cfg.googleDrive) cfg.googleDrive = { credentialsPath: '', rootFolderId: '' };
+      cfg.googleDrive.rootFolderId = rootFolderId;
+      await configManager.updateConfig(cfg);
+      return { success: true };
+    } catch (error) {
+      console.error('Error saving Drive Root Folder:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Select Drive Credentials JSON
+  ipcMain.handle('config:select-drive-credentials', async () => {
+    try {
+      const { dialog } = require('electron');
+      const { getConfigManager } = require('../../services/config-manager');
+      const result = await dialog.showOpenDialog(mainWindow, {
+        title: 'Seleccionar archivo credentials.json',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }]
+      });
+
+      if (result.canceled || result.filePaths.length === 0) {
+        return { success: false, error: 'canceled' };
+      }
+
+      const filePath = result.filePaths[0];
+      
+      let configManager = getConfigManager();
+      await configManager.initialize();
+      const cfg = configManager.getConfig();
+      if (!cfg.googleDrive) cfg.googleDrive = { credentialsPath: '', rootFolderId: '' };
+      cfg.googleDrive.credentialsPath = filePath;
+      await configManager.updateConfig(cfg);
+      
+      return { success: true, path: filePath };
+    } catch (error) {
+      console.error('Error selecting Drive credentials:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Start Drive Sync (Manual)
+  ipcMain.handle('drive:start-sync', async (event, { accountName, cloudName, dominios }) => {
+    try {
+      const { getDriveSyncService } = require('../../services/drive-sync-service');
+      const driveSync = getDriveSyncService();
+      
+      // Async no bloqueante
+      setTimeout(async () => {
+        try {
+          const log = (msg, type) => {
+             if (!event.sender.isDestroyed()) {
+               event.sender.send('drive:log', { msg, type });
+             }
+          };
+          await driveSync.syncBatch(accountName, cloudName, dominios, log);
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('drive:sync-complete', { success: true });
+          }
+        } catch (err) {
+          if (!event.sender.isDestroyed()) {
+            event.sender.send('drive:sync-complete', { success: false, error: err.message });
+          }
+        }
+      }, 100);
+
+      return { success: true };
+    } catch (error) {
+      console.error('Error starting Drive sync:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // Stop Drive Sync
+  ipcMain.handle('drive:stop-sync', async () => {
+    try {
+      const { getDriveSyncService } = require('../../services/drive-sync-service');
+      const driveSync = getDriveSyncService();
+      driveSync.solicitarParada();
+      return { success: true };
+    } catch (error) {
+      console.error('Error stopping Drive sync:', error);
+      return { success: false, error: error.message };
+    }
+  });
+
+  // OAuth2 Check Auth
+  ipcMain.handle('drive:check-auth', async (event, credentialsPath) => {
+    try {
+      if (!credentialsPath) return { success: true, authenticated: false };
+      
+      const { getDriveService } = require('../../services/drive-service');
+      const authOk = await getDriveService().checkAuth(credentialsPath);
+      return { success: true, authenticated: authOk };
+    } catch (e) { return { success: false, error: e.message }; }
+  });
+
+  // OAuth2 Logout
+  ipcMain.handle('drive:logout', async (event, credentialsPath) => {
+    try {
+      const { getDriveService } = require('../../services/drive-service');
+      getDriveService().logout(credentialsPath);
+      return { success: true };
+    } catch (e) { return { success: false, error: e.message }; }
+  });
+
+  // OAuth2 Start Auth
+  ipcMain.handle('drive:start-auth', async (event, credentialsPath) => {
+    return new Promise((resolve) => {
+      try {
+        if (!credentialsPath) {
+          resolve({ success: false, error: 'No se ha seleccionado el archivo de credenciales.' });
+          return;
+        }
+        const { getDriveService } = require('../../services/drive-service');
+        const driveService = getDriveService();
+        const url = driveService.getAuthUrl(credentialsPath);
+        
+        const { shell } = require('electron');
+        shell.openExternal(url);
+
+        const http = require('http');
+        const fs = require('fs');
+        const port = 3000;
+        
+        const server = http.createServer(async (req, res) => {
+          try {
+            const reqUrl = new URL(req.url, `http://127.0.0.1:${port}`);
+            if (reqUrl.pathname === '/') {
+              const code = reqUrl.searchParams.get('code');
+              if (code) {
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.end('<h1>Autenticación Exitosa</h1><p>Ya puedes volver a Kraken. Puedes cerrar esta pestaña.</p><script>window.close()</script>');
+                server.close();
+                await driveService.authorizeWithCode(credentialsPath, code);
+                resolve({ success: true });
+              } else {
+                res.writeHead(400, { 'Content-Type': 'text/plain' });
+                res.end('Falta el código de autorización.');
+                server.close();
+                resolve({ success: false, error: 'Código no encontrado en la URL.' });
+              }
+            }
+          } catch(err) {
+             res.writeHead(500, { 'Content-Type': 'text/plain' });
+             res.end('Error interno.');
+             server.close();
+             resolve({ success: false, error: err.message });
+          }
+        });
+
+        server.listen(port, '127.0.0.1', () => {
+          console.log(`[DRIVE] Esperando callback OAuth en http://127.0.0.1:${port}/`);
+        });
+
+        server.on('error', (err) => {
+          resolve({ success: false, error: 'No se pudo iniciar el servidor local (¿puerto ocupado?): ' + err.message });
+        });
+        
+      } catch (e) {
+        resolve({ success: false, error: e.message });
+      }
+    });
+  });
 }
 
 module.exports = { registerConfigHandlers };

@@ -14,6 +14,7 @@ interface CredentialProgressEvent {
 
 interface SecurityModuleProps {
   onLog: (message: string, type: 'info' | 'warning' | 'error' | 'success', moduleId?: string) => void;
+  logs?: { message: string; type: string; timestamp?: number; source?: string }[];
 }
 
 // ── Iconos ────────────────────────────────────────────────────────────────────
@@ -198,65 +199,64 @@ const SecurityModule: React.FC<SecurityModuleProps> = ({ onLog }) => {
   // ─────────────────────────────────────────────────────────────────────────────
   if (!authenticated) {
     return (
-      <div className="space-y-6">
-        {/* Header */}
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="font-display text-xl font-bold flex items-center gap-2">
-              <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, backgroundColor: 'var(--color-error-bg)', color: 'var(--color-error)' }}>
-                <IconShield />
-              </span>
-              Seguridad
-            </h1>
-            <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
-              Administración avanzada — acceso restringido
-            </p>
-          </div>
+      <div className="flex flex-col h-full bg-background overflow-hidden">
+        {/* ── Page Header ── */}
+        <div className="flex-none px-lg pt-lg pb-md border-b border-outline-variant/30">
+          <h2 className="font-display-lg text-display-lg text-secondary mb-xs flex items-center gap-sm">
+            <span className="flex items-center justify-center w-8 h-8 rounded bg-error/10 text-error">
+              <IconShield />
+            </span>
+            Seguridad
+          </h2>
+          <p className="font-body-md text-on-surface-variant max-w-2xl">
+            Administración avanzada — acceso restringido
+          </p>
         </div>
 
-        {/* Auth card */}
-        <div className="card p-6 space-y-4" style={{ maxWidth: 420, margin: '0 auto' }}>
-          <div className="text-center space-y-1">
-            <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 48, height: 48, borderRadius: 12, backgroundColor: 'var(--color-error-bg)', color: 'var(--color-error)', marginBottom: 8 }}>
-              <IconShield />
-            </div>
-            <h2 className="font-display text-base font-bold">Autenticación requerida</h2>
-            <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-              Esta sección contiene operaciones destructivas. Ingresá la contraseña de administrador para continuar.
-            </p>
-          </div>
-
-          <div>
-            <label htmlFor="security-password" className="block text-sm font-medium mb-1.5" style={{ color: 'var(--text-secondary)' }}>
-              Contraseña de administrador
-            </label>
-            <input
-              id="security-password"
-              type="password"
-              value={passwordInput}
-              onChange={e => setPasswordInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleAuth()}
-              disabled={validating}
-              placeholder="••••••••••"
-              className="input font-mono text-sm"
-              style={{ width: '100%' }}
-              autoFocus
-            />
-            {authError && (
-              <p className="text-xs mt-1.5" style={{ color: 'var(--color-error)' }}>
-                {authError}
+        <div className="flex-1 overflow-y-auto px-lg pb-lg mt-md flex flex-col justify-center items-center">
+          {/* Auth card */}
+          <div className="bg-surface-container-low border border-outline-variant p-xl rounded-md w-full max-w-md shadow-2xl">
+            <div className="text-center space-y-xs mb-lg">
+              <div className="mx-auto flex items-center justify-center w-12 h-12 rounded-lg bg-error/10 text-error mb-sm">
+                <IconShield />
+              </div>
+              <h2 className="font-label-caps text-label-caps text-on-surface uppercase">Autenticación requerida</h2>
+              <p className="font-body-sm text-on-surface-variant">
+                Esta sección contiene operaciones destructivas. Ingresá la contraseña de administrador para continuar.
               </p>
-            )}
-          </div>
+            </div>
 
-          <button
-            id="security-auth-btn"
-            onClick={handleAuth}
-            disabled={!passwordInput.trim() || validating}
-            className="btn btn--primary text-sm w-full"
-          >
-            {validating ? <><span className="spinner" /> Verificando...</> : 'Acceder'}
-          </button>
+            <div className="space-y-sm">
+              <label htmlFor="security-password" className="font-label-caps text-label-caps text-outline block">
+                Contraseña de administrador
+              </label>
+              <input
+                id="security-password"
+                type="password"
+                value={passwordInput}
+                onChange={e => setPasswordInput(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && handleAuth()}
+                disabled={validating}
+                placeholder="••••••••••"
+                className="w-full bg-surface-container border border-outline-variant text-on-surface focus:border-secondary focus:ring-1 focus:ring-secondary font-code-md rounded px-md py-sm transition-all text-center tracking-widest"
+                autoFocus
+              />
+              {authError && (
+                <p className="font-body-sm text-error text-center mt-xs animate-pulse-slow">
+                  {authError}
+                </p>
+              )}
+            </div>
+
+            <button
+              id="security-auth-btn"
+              onClick={handleAuth}
+              disabled={!passwordInput.trim() || validating}
+              className={`mt-md w-full flex items-center justify-center gap-xs px-md py-sm font-title-sm rounded transition-all active:scale-95 ${(!passwordInput.trim() || validating) ? 'bg-surface-container-highest text-outline cursor-not-allowed' : 'bg-error text-white hover:bg-error/90 shadow-[0_0_15px_rgba(255,107,107,0.3)]'}`}
+            >
+              {validating ? <><span className="w-4 h-4 rounded-full border-2 border-white/50 border-t-white animate-spin shrink-0" /> Verificando...</> : 'Acceder'}
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -266,17 +266,17 @@ const SecurityModule: React.FC<SecurityModuleProps> = ({ onLog }) => {
   // ── RENDER: Panel de control ─────────────────────────────────────────────────
   // ─────────────────────────────────────────────────────────────────────────────
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between">
+    <div className="flex flex-col h-full bg-background overflow-hidden">
+      {/* ── Page Header ── */}
+      <div className="flex-none px-lg pt-lg pb-md border-b border-outline-variant/30 flex items-start justify-between">
         <div>
-          <h1 className="font-display text-xl font-bold flex items-center gap-2">
-            <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 6, backgroundColor: 'var(--color-error-bg)', color: 'var(--color-error)' }}>
+          <h2 className="font-display-lg text-display-lg text-secondary mb-xs flex items-center gap-sm">
+            <span className="flex items-center justify-center w-8 h-8 rounded bg-error/10 text-error">
               <IconShield />
             </span>
             Seguridad
-          </h1>
-          <p className="text-sm mt-0.5" style={{ color: 'var(--text-muted)' }}>
+          </h2>
+          <p className="font-body-md text-on-surface-variant max-w-2xl">
             Administración avanzada — sesión activa
           </p>
         </div>
@@ -285,199 +285,190 @@ const SecurityModule: React.FC<SecurityModuleProps> = ({ onLog }) => {
             setAuthenticated(false);
             passwordRef.current = ''; // Limpiar en logout
           }}
-          className="btn btn--ghost text-xs"
-          style={{ color: 'var(--text-muted)' }}
+          className="font-label-caps text-label-caps text-outline hover:text-on-surface transition-colors uppercase"
         >
           Cerrar sesión
         </button>
       </div>
 
-      {/* Selector de servidor */}
-      <section>
-        <h2 className="font-display text-base font-bold mb-3">Servidor destino</h2>
-        <div className="card p-4">
-          {servidores.length > 0 ? (
-            <select
-              value={serverName}
-              onChange={e => setServerName(e.target.value)}
-              className="input text-sm"
-              style={{ width: '100%', fontFamily: 'var(--font-mono)' }}
-            >
-              {servidores.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          ) : (
-            <p className="text-xs py-2 px-3 rounded" style={{ color: 'var(--color-warning)', backgroundColor: 'var(--color-warning-bg)', border: '1px solid var(--color-warning)' }}>
-              No hay servidores configurados.
-            </p>
-          )}
-        </div>
-      </section>
+      <div className="flex-1 overflow-y-auto px-lg pb-lg mt-md">
+        <div className="max-w-4xl mx-auto space-y-lg pb-24">
 
-      {/* Controles de energía */}
-      <section>
-        <h2 className="font-display text-base font-bold mb-3 flex items-center gap-2">
-          <span style={{ color: 'var(--text-muted)' }}><IconPower /></span>
-          Control de energía
-        </h2>
-        <div className="card p-4 space-y-3">
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Estas acciones son inmediatas e irreversibles. El servidor tardará algunos minutos en volver a estar disponible.
-          </p>
-          <div className="flex items-center gap-3">
-            {/* Reboot */}
-            <button
-              id="security-btn-reboot"
-              onClick={handleReboot}
-              disabled={!serverName || rebooting}
-              className="btn text-xs flex items-center gap-2"
-              style={{
-                backgroundColor: rebootConfirm ? 'var(--color-warning)' : 'var(--color-warning-bg)',
-                color: rebootConfirm ? 'var(--surface-base)' : 'var(--color-warning)',
-                border: '1px solid var(--color-warning)',
-              }}
-            >
-              {rebooting ? <><span className="spinner" />Reiniciando...</> : rebootConfirm ? 'Confirmar Reboot' : <><IconPower />Reboot</>}
-            </button>
-            {rebootConfirm && (
-              <button onClick={() => setRebootConfirm(false)} className="btn btn--ghost text-xs" style={{ color: 'var(--text-muted)' }}>
-                Cancelar
-              </button>
-            )}
-
-            {/* Shutdown */}
-            <button
-              id="security-btn-shutdown"
-              onClick={handleShutdown}
-              disabled={!serverName || shuttingDown}
-              className="btn text-xs flex items-center gap-2"
-              style={{
-                backgroundColor: shutdownConfirm ? 'var(--color-error)' : 'var(--color-error-bg)',
-                color: shutdownConfirm ? 'white' : 'var(--color-error)',
-                border: '1px solid var(--color-error)',
-              }}
-            >
-              {shuttingDown ? <><span className="spinner" />Apagando...</> : shutdownConfirm ? 'Confirmar Shutdown' : <><IconPower />Shutdown</>}
-            </button>
-            {shutdownConfirm && (
-              <button onClick={() => setShutdownConfirm(false)} className="btn btn--ghost text-xs" style={{ color: 'var(--text-muted)' }}>
-                Cancelar
-              </button>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* Credential Reset Masivo */}
-      <section>
-        <h2 className="font-display text-base font-bold mb-3 flex items-center gap-2">
-          <span style={{ color: 'var(--text-muted)' }}><IconKey /></span>
-          Reset masivo de credenciales WordPress
-        </h2>
-        <div className="card p-4 space-y-4">
-          <p className="text-xs" style={{ color: 'var(--text-muted)' }}>
-            Actualiza <code className="font-mono px-1 rounded" style={{ backgroundColor: 'oklch(0 0 0 / 0.3)' }}>wp_users.user_pass</code> en todas las instalaciones WordPress del servidor para el usuario especificado. Usa MD5 (estándar de WordPress).
-          </p>
-
-          <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
-            <div>
-              <label htmlFor="security-wp-user" className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
-                Usuario WordPress
-              </label>
-              <input
-                id="security-wp-user"
-                type="text"
-                value={wpUsername}
-                onChange={e => setWpUsername(e.target.value)}
-                disabled={resetRunning}
-                placeholder="dev"
-                className="input font-mono text-sm"
-                style={{ width: '100%' }}
-              />
-            </div>
-            <div>
-              <label htmlFor="security-wp-pass" className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>
-                Nueva contraseña
-              </label>
-              <input
-                id="security-wp-pass"
-                type="password"
-                value={wpNewPassword}
-                onChange={e => setWpNewPassword(e.target.value)}
-                disabled={resetRunning}
-                placeholder="••••••••"
-                className="input font-mono text-sm"
-                style={{ width: '100%' }}
-              />
-            </div>
-          </div>
-
-          <button
-            id="security-btn-credential-reset"
-            onClick={handleCredentialReset}
-            disabled={!serverName || !wpUsername || !wpNewPassword || resetRunning}
-            className="btn btn--primary text-xs flex items-center gap-2"
-          >
-            {resetRunning
-              ? <><span className="spinner" />Reseteando contraseñas...</>
-              : <><IconKey />Ejecutar Reset Masivo</>
-            }
-          </button>
-
-          {/* Progreso del reset */}
-          {(resetProgress.length > 0 || resetResult) && (
-            <div className="mt-2">
-              <div
-                className="rounded overflow-y-auto scrollbar-thin"
-                style={{ maxHeight: 240, backgroundColor: 'oklch(0.12 0.008 250)', fontFamily: 'var(--font-mono)', fontSize: '0.7rem' }}
-              >
-                <div
-                  className="px-3 py-2 border-b text-xs"
-                  style={{ borderBottomColor: 'var(--border-default)', color: 'var(--text-muted)', backgroundColor: 'oklch(0.15 0.01 250)' }}
+          {/* Selector de servidor */}
+          <section>
+            <h2 className="font-label-caps text-label-caps text-outline uppercase mb-sm">Servidor destino</h2>
+            <div className="bg-surface-container-low border border-outline-variant p-md rounded">
+              {servidores.length > 0 ? (
+                <select
+                  value={serverName}
+                  onChange={e => setServerName(e.target.value)}
+                  className="w-full bg-surface-container border border-outline-variant text-on-surface focus:border-secondary focus:ring-1 focus:ring-secondary font-code-md rounded px-sm py-sm"
                 >
-                  Progreso del reset — {serverName}
-                </div>
-                <div className="p-3 space-y-0.5">
-                  {resetProgress.filter(ev => ev.phase === 'done').map((ev, idx) => (
-                    <div
-                      key={idx}
-                      style={{
-                        color: ev.success ? 'var(--color-success)' : 'var(--color-error)',
-                        lineHeight: 1.6,
-                      }}
-                    >
-                      {ev.success ? '✓' : '✗'} {ev.db}
-                      {!ev.success && ev.output && (
-                        <span style={{ color: 'var(--color-error)', opacity: 0.7 }}> — {ev.output.slice(0, 80)}</span>
-                      )}
-                    </div>
-                  ))}
-                  {resetRunning && resetProgress.length > 0 && (
-                    <div style={{ color: 'var(--color-accent)', lineHeight: 1.6 }}>
-                      ⟳ Procesando... ({resetProgress.filter(e => e.phase === 'done').length}/{resetProgress[resetProgress.length - 1]?.total || '?'})
-                    </div>
+                  {servidores.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              ) : (
+                <p className="font-body-sm text-warning bg-warning/10 border border-warning/20 py-sm px-md rounded">
+                  No hay servidores configurados.
+                </p>
+              )}
+            </div>
+          </section>
+
+          {/* Controles de energía */}
+          <section>
+            <h2 className="font-label-caps text-label-caps text-outline uppercase mb-sm flex items-center gap-xs">
+              <span className="text-outline"><IconPower /></span>
+              Control de energía
+            </h2>
+            <div className="bg-surface-container-low border border-outline-variant p-md rounded space-y-md">
+              <p className="font-body-sm text-outline border-l-2 border-warning/50 pl-sm">
+                Estas acciones son inmediatas e irreversibles. El servidor tardará algunos minutos en volver a estar disponible.
+              </p>
+              <div className="flex flex-wrap items-center gap-md">
+                {/* Reboot */}
+                <div className="flex items-center gap-sm">
+                  <button
+                    id="security-btn-reboot"
+                    onClick={handleReboot}
+                    disabled={!serverName || rebooting}
+                    className={`flex items-center gap-xs px-md py-sm font-label-caps text-label-caps rounded transition-all active:scale-95 border ${rebootConfirm ? 'bg-warning text-black border-warning shadow-[0_0_15px_rgba(255,204,0,0.3)]' : 'bg-warning/10 text-warning border-warning/30 hover:bg-warning/20'} ${rebooting || !serverName ? 'opacity-50 cursor-not-allowed hover:bg-warning/10' : ''}`}
+                  >
+                    {rebooting ? <><span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin shrink-0" />Reiniciando...</> : rebootConfirm ? 'Confirmar Reboot' : <><IconPower />Reboot</>}
+                  </button>
+                  {rebootConfirm && (
+                    <button onClick={() => setRebootConfirm(false)} className="font-label-caps text-label-caps text-outline hover:text-on-surface transition-colors uppercase">
+                      Cancelar
+                    </button>
                   )}
-                  <div ref={progressEndRef} />
+                </div>
+
+                {/* Shutdown */}
+                <div className="flex items-center gap-sm">
+                  <button
+                    id="security-btn-shutdown"
+                    onClick={handleShutdown}
+                    disabled={!serverName || shuttingDown}
+                    className={`flex items-center gap-xs px-md py-sm font-label-caps text-label-caps rounded transition-all active:scale-95 border ${shutdownConfirm ? 'bg-error text-white border-error shadow-[0_0_15px_rgba(255,107,107,0.3)]' : 'bg-error/10 text-error border-error/30 hover:bg-error/20'} ${shuttingDown || !serverName ? 'opacity-50 cursor-not-allowed hover:bg-error/10' : ''}`}
+                  >
+                    {shuttingDown ? <><span className="w-3 h-3 rounded-full border-2 border-current border-t-transparent animate-spin shrink-0" />Apagando...</> : shutdownConfirm ? 'Confirmar Shutdown' : <><IconPower />Shutdown</>}
+                  </button>
+                  {shutdownConfirm && (
+                    <button onClick={() => setShutdownConfirm(false)} className="font-label-caps text-label-caps text-outline hover:text-on-surface transition-colors uppercase">
+                      Cancelar
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Credential Reset Masivo */}
+          <section>
+            <h2 className="font-label-caps text-label-caps text-outline uppercase mb-sm flex items-center gap-xs">
+              <span className="text-outline"><IconKey /></span>
+              Reset masivo de credenciales WordPress
+            </h2>
+            <div className="bg-surface-container-low border border-outline-variant p-md rounded space-y-md">
+              <p className="font-body-sm text-outline border-l-2 border-error/50 pl-sm">
+                Actualiza <code className="font-code-sm text-on-surface-variant bg-surface-container px-1 py-px rounded">wp_users.user_pass</code> en todas las instalaciones WordPress del servidor para el usuario especificado. Usa MD5 (estándar de WordPress).
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-md">
+                <div className="space-y-xs">
+                  <label htmlFor="security-wp-user" className="font-label-caps text-label-caps text-outline block">
+                    Usuario WordPress
+                  </label>
+                  <input
+                    id="security-wp-user"
+                    type="text"
+                    value={wpUsername}
+                    onChange={e => setWpUsername(e.target.value)}
+                    disabled={resetRunning}
+                    placeholder="dev"
+                    className="w-full bg-surface-container border border-outline-variant text-on-surface focus:border-error focus:ring-1 focus:ring-error font-code-md rounded px-sm py-sm"
+                  />
+                </div>
+                <div className="space-y-xs">
+                  <label htmlFor="security-wp-pass" className="font-label-caps text-label-caps text-outline block">
+                    Nueva contraseña
+                  </label>
+                  <input
+                    id="security-wp-pass"
+                    type="password"
+                    value={wpNewPassword}
+                    onChange={e => setWpNewPassword(e.target.value)}
+                    disabled={resetRunning}
+                    placeholder="••••••••"
+                    className="w-full bg-surface-container border border-outline-variant text-on-surface focus:border-error focus:ring-1 focus:ring-error font-code-md rounded px-sm py-sm tracking-widest"
+                  />
                 </div>
               </div>
 
-              {/* Resumen final */}
-              {resetResult && (
-                <div
-                  className="mt-2 px-3 py-2 rounded text-xs"
-                  style={{
-                    backgroundColor: resetResult.errors.length === 0 ? 'var(--color-success-bg)' : 'var(--color-warning-bg)',
-                    border: `1px solid ${resetResult.errors.length === 0 ? 'var(--color-success)' : 'var(--color-warning)'}`,
-                    color: resetResult.errors.length === 0 ? 'var(--color-success)' : 'var(--color-warning)',
-                  }}
-                >
-                  Reset completado: {resetResult.updated}/{resetResult.total} bases de datos actualizadas.
-                  {resetResult.errors.length > 0 && ` ${resetResult.errors.length} errores.`}
+              <button
+                id="security-btn-credential-reset"
+                onClick={handleCredentialReset}
+                disabled={!serverName || !wpUsername || !wpNewPassword || resetRunning}
+                className={`flex items-center gap-xs px-md py-sm font-title-sm rounded transition-all active:scale-95 ${(!serverName || !wpUsername || !wpNewPassword || resetRunning) ? 'bg-surface-container-highest text-outline cursor-not-allowed' : 'bg-error text-white hover:bg-error/90 shadow-[0_0_15px_rgba(255,107,107,0.3)]'}`}
+              >
+                {resetRunning
+                  ? <><span className="w-4 h-4 rounded-full border-2 border-white/50 border-t-white animate-spin shrink-0" />Reseteando contraseñas...</>
+                  : <><IconKey />Ejecutar Reset Masivo</>
+                }
+              </button>
+
+              {/* Progreso del reset */}
+              {(resetProgress.length > 0 || resetResult) && (
+                <div className="mt-md border-t border-outline-variant/30 pt-md">
+                  <div className="bg-black/40 border border-outline-variant/30 rounded flex flex-col h-[240px]">
+                    <div className="flex-none px-sm py-xs bg-surface-container border-b border-outline-variant/30 font-label-caps text-label-caps text-outline flex items-center justify-between">
+                      <span>Progreso del reset — {serverName}</span>
+                      {resetRunning && <span className="flex items-center gap-1 text-tertiary"><span className="w-2 h-2 rounded-full bg-tertiary animate-pulse" />Procesando</span>}
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-sm space-y-1 font-code-sm text-code-sm scrollbar-thin">
+                      {resetProgress.filter(ev => ev.phase === 'done').map((ev, idx) => (
+                        <div
+                          key={idx}
+                          className={ev.success ? 'text-green-400' : 'text-error'}
+                        >
+                          <span className="mr-2">{ev.success ? '✓' : '✗'}</span>{ev.db}
+                          {!ev.success && ev.output && (
+                            <span className="opacity-70"> — {ev.output.slice(0, 80)}</span>
+                          )}
+                        </div>
+                      ))}
+                      {resetRunning && resetProgress.length > 0 && (
+                        <div className="text-tertiary animate-pulse">
+                          ⟳ Procesando... ({resetProgress.filter(e => e.phase === 'done').length}/{resetProgress[resetProgress.length - 1]?.total || '?'})
+                        </div>
+                      )}
+                      <div ref={progressEndRef} />
+                    </div>
+                  </div>
+
+                  {/* Resumen final */}
+                  {resetResult && (
+                    <div
+                      className={`mt-sm px-sm py-sm rounded border font-code-sm text-code-sm ${
+                        resetResult.errors.length === 0 
+                          ? 'bg-green-400/10 border-green-400/30 text-green-400' 
+                          : 'bg-warning/10 border-warning/30 text-warning'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        {resetResult.errors.length === 0 ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="20 6 9 17 4 12" /></svg> : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>}
+                        <span>
+                          Reset completado: <strong>{resetResult.updated}</strong> de <strong>{resetResult.total}</strong> bases de datos actualizadas.
+                          {resetResult.errors.length > 0 && ` ${resetResult.errors.length} errores.`}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
-          )}
+          </section>
         </div>
-      </section>
+      </div>
     </div>
   );
 };
