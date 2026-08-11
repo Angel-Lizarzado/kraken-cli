@@ -132,6 +132,13 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
           if (emailConf?.success) {
             setHostingerMailTokenDisplay(emailConf.obfuscated || '');
           }
+
+          // Cargar Elementor Pro config
+          const epConf = await api.invoke('config:get');
+          if (epConf?.elementorPro) {
+            if (epConf.elementorPro.zipPath)    setEpZipPath(epConf.elementorPro.zipPath);
+            if (epConf.elementorPro.licenseKey) setEpLicenseKey(epConf.elementorPro.licenseKey);
+          }
         }
       } catch { /* silencioso */ }
       // Cargar workspace path actual
@@ -412,13 +419,54 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
   const [savingEp, setSavingEp] = useState<boolean>(false);
   const [isDriveSyncing, setIsDriveSyncing] = useState<boolean>(false);
 
-  const handleSelectEpZip = useCallback(() => {
-    toast.info('Selección de Elementor Pro aún no implementada.');
+  const handleSelectEpZip = useCallback(async () => {
+    const api = (window as any).api;
+    const res = await api.invoke('dialog:open-file', {
+      title: 'Seleccionar ZIP de Elementor Pro',
+      filters: [{ name: 'ZIP', extensions: ['zip'] }],
+    });
+    if (!res?.success || !res.filePath) return;
+
+    const newPath = res.filePath;
+    setEpZipPath(newPath);
+
+    // Guardar en config
+    const current = await api.invoke('config:get');
+    const updated = {
+      ...current,
+      elementorPro: {
+        ...(current?.elementorPro || {}),
+        zipPath: newPath,
+      },
+    };
+    api.send('config:save', updated);
+    toast.success('ZIP de Elementor Pro guardado.');
   }, [toast]);
 
-  const handleSaveEpLicense = useCallback(() => {
-    toast.info('Guardado de licencia de Elementor Pro aún no implementado.');
-  }, [toast]);
+  const handleSaveEpLicense = useCallback(async () => {
+    if (!epLicenseKey.trim()) {
+      toast.error('Ingresá una license key válida.');
+      return;
+    }
+    setSavingEp(true);
+    const api = (window as any).api;
+    try {
+      const current = await api.invoke('config:get');
+      const updated = {
+        ...current,
+        elementorPro: {
+          ...(current?.elementorPro || {}),
+          licenseKey: epLicenseKey.trim(),
+        },
+      };
+      api.send('config:save', updated);
+      toast.success('License key guardada.');
+    } catch (err: any) {
+      toast.error(`Error guardando: ${err.message}`);
+    } finally {
+      setSavingEp(false);
+    }
+  }, [epLicenseKey, toast]);
 
   const handleSyncDriveConfig = useCallback(async () => {
     const api = (window as any).api;
@@ -879,7 +927,7 @@ const ConfigPanel: React.FC<ConfigPanelProps> = ({ onLog }) => {
                   <div>
                     <h4 className="text-sm font-bold">Elementor Pro Zip</h4>
                     <p className="text-[11px]" style={{ color: '#a5a5a5' }}>
-                      {epZipPath ? epZipPath.split('').pop() : 'No zip selected'}
+                      {epZipPath ? epZipPath.split(/[\/]/).pop() : 'No zip selected'}
                     </p>
                   </div>
                 </div>
