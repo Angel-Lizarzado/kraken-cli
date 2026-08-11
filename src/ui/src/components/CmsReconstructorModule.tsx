@@ -43,7 +43,7 @@ const MODE_DESCRIPTIONS: Record<CmsMode, string> = {
   'full':             'Reconstrucción completa: core, plugins, seguridad y caché',
   'core-only':        'Solo actualiza el core de WordPress',
   'security-only':    'Aplica hardening y revisa checksums del core',
-  'solo-plugin':      'Instala o actualiza el plugin ZIP especificado',
+  'solo-plugin':      'Instala Elementor Pro (config) + ZIP adicional + desactiva plugins conflictivos',
   'flush-permalinks': 'Flusheea permalinks y caché WP (wp rewrite flush --hard)',
 };
 
@@ -80,6 +80,9 @@ export default function CmsReconstructorModule({ onLog }: Props) {
   const [phpSwitch, setPhpSwitch]         = useState(false);
   const [servers, setServers]             = useState<string[]>([]);
 
+  // Elementor Pro auto-detectado desde configuración
+  const [elementorConfig, setElementorConfig] = useState<{ zipPath: string; licenseKey: string } | null>(null);
+
   // Versions
   const [versionesPHP, setVersionesPHP]   = useState<any[]>([]);
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
@@ -104,12 +107,19 @@ export default function CmsReconstructorModule({ onLog }: Props) {
     .map(d => d.trim().toLowerCase())
     .filter(Boolean);
 
-  // Hydrate servers list
+  // Hydrate servers list + elementor config
   useEffect(() => {
     api?.invoke('config:get').then((cfg: any) => {
       if (cfg?.destinationServers) {
         setServers(cfg.destinationServers.map((s: any) => s.name));
         if (cfg.destinationServers.length > 0) setServerName(cfg.destinationServers[0].name);
+      }
+      // Leer Elementor Pro desde config
+      if (cfg?.elementorPro?.zipPath) {
+        setElementorConfig({
+          zipPath:    cfg.elementorPro.zipPath,
+          licenseKey: cfg.elementorPro.licenseKey || '',
+        });
       }
     }).catch(() => {});
 
@@ -450,20 +460,77 @@ export default function CmsReconstructorModule({ onLog }: Props) {
               </div>
             )}
 
-            {/* ZIP Plugin — solo si aplica */}
+            {/* ── Panel de Plugins — solo si aplica ── */}
             {(mode === 'full' || mode === 'solo-plugin') && (
-              <div className="space-y-xs">
-                <label className="font-label-caps text-label-caps text-outline">ZIP Plugin</label>
-                <div className="flex gap-sm">
-                  <input type="text" value={localZipPath} onChange={e => setLocalZipPath(e.target.value)}
-                    placeholder="Ruta local del .zip"
-                    className="w-full bg-surface-container border border-outline-variant text-on-surface font-code-sm px-sm py-sm rounded" readOnly />
-                  <button onClick={handlePickZip}
-                    className="px-sm py-sm bg-surface-container-highest border border-outline-variant rounded hover:bg-surface-bright transition-colors text-on-surface-variant">
-                    <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
-                    </svg>
-                  </button>
+              <div className="space-y-sm pt-xs border-t border-outline-variant/40">
+                <label className="font-label-caps text-label-caps text-outline">Plugins</label>
+
+                {/* Elementor Pro — auto desde config */}
+                <div className={`flex items-start gap-sm p-sm rounded border ${
+                  elementorConfig
+                    ? 'border-secondary/30 bg-secondary/5'
+                    : 'border-outline-variant bg-surface-container'
+                }`}>
+                  <span className={`mt-px text-[11px] font-bold shrink-0 ${
+                    elementorConfig ? 'text-secondary' : 'text-outline'
+                  }`}>{elementorConfig ? '✓' : '–'}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-label-caps text-[10px] text-on-surface">
+                      Elementor Pro
+                      {elementorConfig
+                        ? <span className="ml-sm text-secondary font-normal">desde config</span>
+                        : <span className="ml-sm text-outline font-normal">no configurado</span>
+                      }
+                    </p>
+                    {elementorConfig && (
+                      <p className="font-code-sm text-[10px] text-outline mt-[2px] truncate">
+                        {elementorConfig.zipPath.split(/[\\/]/).pop()}
+                        {elementorConfig.licenseKey && (
+                          <span className="ml-sm text-on-surface-variant">• key: {elementorConfig.licenseKey.slice(0, 6)}••••••</span>
+                        )}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* ZIP adicional */}
+                <div className="space-y-xs">
+                  <label className="font-label-caps text-[10px] text-outline">ZIP adicional (opcional)</label>
+                  <div className="flex gap-sm">
+                    <input type="text" value={localZipPath} onChange={e => setLocalZipPath(e.target.value)}
+                      placeholder="Seleccionar .zip..."
+                      className="w-full bg-surface-container border border-outline-variant text-on-surface font-code-sm text-[11px] px-sm py-xs rounded" readOnly />
+                    <button onClick={handlePickZip}
+                      className="px-sm py-xs bg-surface-container-highest border border-outline-variant rounded hover:bg-surface-bright transition-colors text-on-surface-variant shrink-0">
+                      <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+                      </svg>
+                    </button>
+                    {localZipPath && (
+                      <button onClick={() => setLocalZipPath('')}
+                        className="px-xs py-xs text-outline hover:text-error transition-colors text-[11px] shrink-0">
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Lista negra — informativa */}
+                <div className="space-y-xs pt-xs border-t border-outline-variant/30">
+                  <label className="font-label-caps text-[10px] text-outline">
+                    Lista negra
+                    <span className="ml-sm text-[9px] font-normal normal-case text-on-surface-variant">(se desactivarán, no se eliminarán)</span>
+                  </label>
+                  {[
+                    'All-in-One WP Migration',
+                    'GDPR Cookie Compliance',
+                    'LiteSpeed Cache',
+                  ].map(name => (
+                    <div key={name} className="flex items-center gap-xs">
+                      <span className="text-error text-[10px]">&#x25CF;</span>
+                      <span className="font-code-sm text-[10px] text-on-surface-variant">{name}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

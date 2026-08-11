@@ -44,25 +44,29 @@ async function baseRun(ssh, client, cmd, opts = {}) {
  * Reconstruye WordPress en un dominio específico.
  *
  * @param {object}   params
- * @param {object}   params.ssh              - SshService instancia
- * @param {object}   params.client           - Conexión SSH ya abierta
- * @param {string}   params.domain           - Dominio a reconstruir
- * @param {string}   params.webRoot          - Ruta absoluta de httpdocs
- * @param {string}   params.sysUser          - Usuario Unix de la suscripción (sin truncar)
- * @param {string}   params.wpVersion        - Versión WP a instalar (e.g. '6.7.2')
- * @param {string}   params.targetPhpVersion - Versión PHP destino ('Mantener actual' o '8.2', etc.)
- * @param {string}   params.elementorZipPath - Ruta remota del ZIP de Elementor Pro
- * @param {'full'|'core-only'|'security-only'} params.mode
- * @param {boolean}  params.dryRun           - Si true, solo verifica sin modificar
- * @param {Function} params.onStep           - callback(stepNum, total, msg, level)
- * @param {AbortSignal} [params.signal]      - Para abort
+ * @param {object}   params.ssh                    - SshService instancia
+ * @param {object}   params.client                 - Conexión SSH ya abierta
+ * @param {string}   params.domain                 - Dominio a reconstruir
+ * @param {string}   params.webRoot                - Ruta absoluta de httpdocs
+ * @param {string}   params.sysUser                - Usuario Unix de la suscripción (sin truncar)
+ * @param {string}   params.wpVersion              - Versión WP a instalar (e.g. '6.7.2')
+ * @param {string}   params.targetPhpVersion       - Versión PHP destino ('Mantener actual' o '8.2', etc.)
+ * @param {string}   [params.elementorZipRemotePath] - Ruta remota del ZIP de Elementor Pro
+ * @param {string}   [params.elementorLicenseKey]  - Clave de licencia Elementor Pro
+ * @param {string}   [params.extraZipRemotePath]   - Ruta remota de un ZIP adicional
+ * @param {'full'|'core-only'|'security-only'|'solo-plugin'} params.mode
+ * @param {boolean}  params.dryRun                 - Si true, solo verifica sin modificar
+ * @param {Function} params.onStep                 - callback(stepNum, total, msg, level)
+ * @param {AbortSignal} [params.signal]            - Para abort
  */
 async function reconstructDomain({
   ssh, client,
   domain, webRoot, sysUser,
   wpVersion = '6.7.2',
   targetPhpVersion = 'Mantener actual',
-  elementorZipPath,
+  elementorZipRemotePath = null,
+  elementorLicenseKey    = null,
+  extraZipRemotePath     = null,
   mode = 'full',
   dryRun = false,
   onStep = () => {},
@@ -115,7 +119,7 @@ async function reconstructDomain({
     }
 
     if (mode === 'solo-plugin') {
-      await runStep6(ctx, elementorZipPath);
+      await runStep6(ctx, { elementorZipRemotePath, elementorLicenseKey, extraZipRemotePath });
       return { success: true, steps };
     }
 
@@ -135,7 +139,7 @@ async function reconstructDomain({
     await runStep5(ctx);
     assertNotAborted(ctx.signal);
 
-    await runStep6(ctx, elementorZipPath);
+    await runStep6(ctx, { elementorZipRemotePath, elementorLicenseKey, extraZipRemotePath });
     assertNotAborted(ctx.signal);
 
     await runStep7(ctx);

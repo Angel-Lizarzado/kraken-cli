@@ -15,6 +15,7 @@
 const path = require('path');
 const { reconstructDomain } = require('./cmsReconstructor');
 const { getSshService } = require('../ssh-service');
+const { getConfigManager } = require('../config-manager');
 
 async function run(ssh, client, cmd, opts = {}) {
   const result = await ssh.executeCommand(client, cmd, { timeout: opts.timeout || 300000 });
@@ -67,25 +68,22 @@ async function getDomainInfo(ssh, client, domain) {
 }
 
 /**
- * Sube el ZIP de Elementor Pro via SCP al servidor.
+ * Sube un ZIP al servidor via SCP.
  * @param {object} ssh - SshService
  * @param {object} sshCredentials
  * @param {string} localZipPath - ruta local Windows
  * @param {string} remoteDir    - directorio destino en el servidor
  * @returns {Promise<string>}   - ruta remota del ZIP
  */
-async function uploadElementorZip(ssh, sshCredentials, localZipPath, remoteDir = '/tmp/kraken-workspace') {
+async function uploadZip(ssh, sshCredentials, localZipPath, remoteDir = '/tmp/kraken-workspace') {
   const fileName    = path.basename(localZipPath);
   const remotePath  = `${remoteDir}/${fileName}`;
 
   let client = null;
   try {
     client = await ssh.connect(sshCredentials, `cms-scp-${Date.now()}`);
-    // Asegurar que el directorio existe
     await ssh.executeCommand(client, `mkdir -p ${remoteDir}`, { timeout: 10000 });
-    // Subir via SFTP fastPut (32 canales paralelos, 256KB chunks)
     await ssh.uploadFileFast(client, localZipPath, remotePath, (transferred, total, pct, msg) => {
-      // El progreso se loguea en consola — la UI recibirá upload-start/upload-done
       console.log(`[CMS:SCP] ${msg} (${pct}%)`);
     });
     return remotePath;
@@ -123,15 +121,15 @@ async function cleanupRemoteZip(ssh, client, remotePath) {
  * Ejecuta el batch de reconstrucción CMS.
  *
  * @param {object}   params
- * @param {string[]} params.domains         - lista de dominios a procesar
- * @param {string}   params.serverName      - nombre del servidor destino
- * @param {object}   params.sshCredentials  - { host, port, username }
- * @param {string}   [params.localZipPath]  - ruta local del ZIP de Elementor
- * @param {string}   params.targetPhpVersion- versión PHP destino (ej. '8.2') o 'Mantener actual'
- * @param {'full'|'core-only'|'security-only'} params.mode
+ * @param {string[]} params.domains            - lista de dominios a procesar
+ * @param {string}   params.serverName         - nombre del servidor destino
+ * @param {object}   params.sshCredentials     - { host, port, username }
+ * @param {string}   [params.localZipPath]     - ruta local del ZIP adicional (opcional)
+ * @param {string}   params.targetPhpVersion   - versión PHP destino o 'Mantener actual'
+ * @param {'full'|'core-only'|'security-only'|'solo-plugin'} params.mode
  * @param {boolean}  params.dryRun
- * @param {boolean}  params.phpSwitch       - si debe cambiar versión PHP
- * @param {Function} params.onProgress      - callback(CmsProgress)
+ * @param {boolean}  params.phpSwitch          - si debe cambiar versión PHP
+ * @param {Function} params.onProgress         - callback(CmsProgress)
  * @param {AbortSignal} [params.signal]
  * @returns {Promise<{processed:number, succeeded:number, failed:number, history:Array}>}
  */
@@ -139,7 +137,7 @@ async function runCmsBatch({
   domains,
   serverName,
   sshCredentials,
-  localZipPath,
+  localZipPath,      // ZIP adicional (manual, desde el UI)
   targetPhpVersion = 'Mantener actual',
   mode = 'full',
   dryRun = false,
@@ -151,22 +149,45 @@ async function runCmsBatch({
   const history = [];
   let succeeded = 0;
   let failed = 0;
-  let remoteZipPath = null;
+  let remoteElementorZip = null;  // Elementor Pro (desde config)
+  let remoteExtraZip     = null;  // ZIP adicional (desde UI)
+  let elementorLicenseKey = null;
 
   const total = domains.length;
 
-  // ── SCP upload del ZIP de Elementor/Plugin (una sola vez) ─────────────────────────
-  if (localZipPath && (mode === 'full' || mode === 'solo-plugin') && !dryRun) {
-    console.log(`[CMS Batch] Iniciando subida de ZIP de Plugin: ${localZipPath}`);
-    onProgress({ type: 'upload-start', msg: `Subiendo Plugin ZIP al servidor "${serverName}"...` });
+  // ── Leer config de Elementor Pro (automático desde configuración global) ────
+  const needsPlugins = (mode === 'full' || mode === 'solo-plugin') && !dryRun;
+  if (needsPlugins) {
     try {
-      remoteZipPath = await uploadElementorZip(ssh, sshCredentials, localZipPath);
-      console.log(`[CMS Batch] ZIP subido exitosamente a ${remoteZipPath}`);
-      onProgress({ type: 'upload-done', msg: `ZIP subido → ${remoteZipPath}`, level: 'success' });
-    } catch (err) {
-      console.error(`[CMS Batch] Error subiendo ZIP:`, err);
-      onProgress({ type: 'domain-error', msg: `Error subiendo ZIP: ${err.message}`, level: 'error' });
-      // No abortar el batch — simplemente no habrá inyección de Elementor
+      const cfgMgr = getConfigManager();
+      const cfg    = cfgMgr.getConfig();
+      const epZip  = cfg?.elementorPro?.zipPath  || null;
+      const epKey  = cfg?.elementorPro?.licenseKey || null;
+
+      if (epZip) {
+        console.log(`[CMS Batch] Subiendo Elementor Pro desde config: ${epZip}`);
+        onProgress({ type: 'upload-start', msg: `Subiendo Elementor Pro al servidor "${serverName}"...` });
+        remoteElementorZip  = await uploadZip(ssh, sshCredentials, epZip);
+        elementorLicenseKey = epKey || null;
+        onProgress({ type: 'upload-done', msg: `Elementor Pro → ${remoteElementorZip}`, level: 'success' });
+      }
+    } catch (epErr) {
+      console.warn(`[CMS Batch] No se pudo subir Elementor Pro:`, epErr.message);
+      onProgress({ type: 'domain-step', msg: `Advertencia: Elementor Pro no disponible — ${epErr.message}`, level: 'warn' });
+    }
+
+    // ── ZIP adicional (manual desde UI) ──────────────────────────────────────
+    if (localZipPath) {
+      console.log(`[CMS Batch] Subiendo ZIP adicional: ${localZipPath}`);
+      onProgress({ type: 'upload-start', msg: `Subiendo plugin adicional al servidor "${serverName}"...` });
+      try {
+        remoteExtraZip = await uploadZip(ssh, sshCredentials, localZipPath);
+        onProgress({ type: 'upload-done', msg: `Plugin adicional → ${remoteExtraZip}`, level: 'success' });
+      } catch (err) {
+        console.error(`[CMS Batch] Error subiendo ZIP adicional:`, err);
+        onProgress({ type: 'domain-step', msg: `Error subiendo ZIP adicional: ${err.message}`, level: 'warn' });
+        // No abortar el batch
+      }
     }
   }
 
@@ -206,7 +227,9 @@ async function runCmsBatch({
         domain, webRoot, sysUser,
         wpVersion: '6.7.2',
         targetPhpVersion,
-        elementorZipPath: remoteZipPath,
+        elementorZipRemotePath: remoteElementorZip,
+        elementorLicenseKey,
+        extraZipRemotePath: remoteExtraZip,
         mode, dryRun,
         signal,
         onStep: (stepNum, stepTotal, msg, level) => {
@@ -252,13 +275,16 @@ async function runCmsBatch({
     }
   }
 
-  // ── Limpieza del ZIP remoto ────────────────────────────────────────────────
-  if (remoteZipPath && !dryRun) {
+  // ── Limpieza de ZIPs remotos ───────────────────────────────────────────────
+  const zipsToClear = [remoteElementorZip, remoteExtraZip].filter(Boolean);
+  if (zipsToClear.length > 0 && !dryRun) {
     let client = null;
     try {
       client = await ssh.connect(sshCredentials, `cms-cleanup-${Date.now()}`);
-      await cleanupRemoteZip(ssh, client, remoteZipPath);
-      onProgress({ type: 'upload-done', msg: `ZIP temporal eliminado del servidor ✓`, level: 'info' });
+      for (const zipPath of zipsToClear) {
+        await cleanupRemoteZip(ssh, client, zipPath);
+      }
+      onProgress({ type: 'upload-done', msg: `ZIPs temporales eliminados del servidor ✓`, level: 'info' });
     } catch (_) { /* no crítico */ } finally {
       if (client) { try { await ssh.disconnect(client); } catch (_) {} }
     }
