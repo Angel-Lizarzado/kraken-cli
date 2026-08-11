@@ -525,6 +525,9 @@ export default function CmsReconstructorModule({ onLog }: Props) {
                     'All-in-One WP Migration',
                     'GDPR Cookie Compliance',
                     'LiteSpeed Cache',
+                    'Duplicate Page',
+                    'Starter Templates',
+                    'Migrate Guru',
                   ].map(name => (
                     <div key={name} className="flex items-center gap-xs">
                       <span className="text-error text-[10px]">&#x25CF;</span>

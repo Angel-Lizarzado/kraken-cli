@@ -1,6 +1,6 @@
 {
   "name": "kraken-cli",
-  "version": "1.22.29",
+  "version": "1.22.31",
   "description": "Kraken CLI Control Center - Desktop application for managing WordPress migrations",
   "main": "src/electron/main.js",
   "scripts": {

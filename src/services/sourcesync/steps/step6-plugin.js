@@ -16,6 +16,9 @@ const BLACKLIST_SLUGS = [
   'all-in-one-wp-migration',
   'gdpr-cookie-compliance',
   'litespeed-cache',
+  'duplicate-page',
+  'starter-templates',
+  'migrate-guru',
 ];
 
 /**
