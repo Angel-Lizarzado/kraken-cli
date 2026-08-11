@@ -5,10 +5,11 @@
  * @description Handlers IPC para el CMS Reconstructor.
  *
  * Canales invoke:
- *   cms:audit-server   → Audita todos los dominios WP del servidor
- *   cms:start-batch    → Inicia reconstrucción de dominios seleccionados
- *   cms:abort          → Kill switch del batch/audit activo
- *   cms:get-state      → Devuelve estado persistido
+ *   cms:audit-server       → Audita todos los dominios WP del servidor
+ *   cms:start-batch        → Inicia reconstrucción de dominios seleccionados
+ *   cms:flush-permalinks   → Flushea permalinks WP en lista de dominios (wp rewrite flush --hard)
+ *   cms:abort              → Kill switch del batch/audit activo
+ *   cms:get-state          → Devuelve estado persistido
  *
  * Canales send (main → renderer):
  *   cms:audit-progress → Progreso del audit por dominio
@@ -325,6 +326,143 @@ function registerCmsHandlers(ipcMain, mainWindow) {
     })();
 
     return { success: true, message: `Batch iniciado con ${domains.length} dominios.` };
+  });
+
+  // ── FLUSH PERMALINKS: wp rewrite flush --hard en lista de dominios ────────
+  ipcMain.handle('cms:flush-permalinks', async (_event, { serverName, domains }) => {
+    if (_processRunning) return { success: false, error: 'Ya hay un proceso activo. Aborta el anterior primero.' };
+    if (!domains?.length) return { success: false, error: 'Lista de dominios vacía.' };
+
+    let config, server;
+    try {
+      config = await getConfig();
+      server = findServer(config, serverName);
+    } catch (err) {
+      return { success: false, error: err.message };
+    }
+
+    _abortController = new AbortController();
+    _processRunning  = true;
+
+    const ssh = getSshService();
+    const CONCURRENCY = 3;
+    const sem = createSemaphore(CONCURRENCY);
+
+    emit('cms:progress', {
+      type: 'batch-start',
+      msg: `Flusheando permalinks — ${domains.length} dominios`,
+      total: domains.length,
+    });
+
+    // Fire-and-forget para no bloquear el IPC
+    (async () => {
+      try {
+        await Promise.all(domains.map(async (domain) => {
+          if (_abortController.signal.aborted) return;
+          await sem.acquire();
+
+          emit('cms:progress', { type: 'domain-start', domain });
+          const t0 = Date.now();
+          let client = null;
+
+          try {
+            client = await ssh.connect(server.sshCredentials, `flush-${domain}-${Date.now()}`);
+
+            // Detectar docroot real (fallback estándar de Plesk)
+            const docrootRes = await run(ssh, client,
+              `plesk bin site --info ${domain} 2>/dev/null | grep -i "Document root" | head -1 | awk '{print $NF}'`,
+              { allowFail: true }
+            );
+            const docroot = docrootRes.stdout.trim() || `/var/www/vhosts/${domain}/httpdocs`;
+
+            // Detectar usuario del sistema
+            const userRes = await run(ssh, client,
+              `stat -c '%U' ${docroot} 2>/dev/null || echo "root"`,
+              { allowFail: true }
+            );
+            const sysUser = userRes.stdout.trim() || 'root';
+
+            emit('cms:progress', { type: 'domain-step', domain, msg: `docroot: ${docroot} (usuario: ${sysUser})`, level: 'info' });
+
+            const wp = (cmd) => `cd ${docroot} && su -s /bin/bash ${sysUser} -c ${JSON.stringify(cmd)} 2>/dev/null`;
+
+            // Verificar que es WordPress antes de continuar
+            const isWpRes = await run(ssh, client, wp('wp core is-installed 2>&1'), { allowFail: true });
+            if (isWpRes.code !== 0) {
+              emit('cms:progress', { type: 'domain-step', domain, msg: `No es WordPress o WP-CLI no disponible — saltando`, level: 'warn' });
+              emit('cms:progress', { type: 'domain-done', domain, success: true, duration: Date.now() - t0 });
+              return;
+            }
+
+            // ── STEP 1: Leer permalink_structure de la BD; si está vacía, forzar /%postname%/
+            const structRes = await run(ssh, client,
+              wp('wp option get permalink_structure 2>&1'),
+              { allowFail: true, timeout: 20000 }
+            );
+            const currentStructure = (structRes.stdout || '').trim();
+            let finalStructure = currentStructure;
+
+            if (!currentStructure || currentStructure === '0' || currentStructure.includes('Error')) {
+              // Estructura vacía → WordPress usa links planos (?p=123), WP-CLI escribiría reglas vacías
+              finalStructure = '/%postname%/';
+              const setRes = await run(ssh, client,
+                wp(`wp option update permalink_structure '${finalStructure}' 2>&1`),
+                { allowFail: true, timeout: 20000 }
+              );
+              emit('cms:progress', { type: 'domain-step', domain,
+                msg: `permalink_structure vacía → forzando a ${finalStructure} (${setRes.code === 0 ? 'ok' : 'warn'})`,
+                level: setRes.code === 0 ? 'info' : 'warn',
+              });
+            } else {
+              emit('cms:progress', { type: 'domain-step', domain,
+                msg: `permalink_structure actual: ${currentStructure}`,
+                level: 'info',
+              });
+            }
+
+            // ── STEP 2: Escribir .htaccess directamente como root (sin depender de permisos del sysUser)
+            //    Esto evita el caso donde WP-CLI silenciosamente falla por permisos del archivo
+
+            const writeHtaccessCmd = `cat > "${docroot}/.htaccess" << 'HTEOF'\n# BEGIN WordPress\n<IfModule mod_rewrite.c>\nRewriteEngine On\nRewriteBase /\nRewriteRule ^index\\.php$ - [L]\nRewriteCond %{REQUEST_FILENAME} !-f\nRewriteCond %{REQUEST_FILENAME} !-d\nRewriteRule . /index.php [L]\n</IfModule>\n# END WordPress\nHTEOF`;
+            const htaccessRes = await run(ssh, client, writeHtaccessCmd, { allowFail: true, timeout: 15000 });
+            emit('cms:progress', { type: 'domain-step', domain,
+              msg: `.htaccess escrito directamente (root) → ${htaccessRes.code === 0 ? 'ok' : htaccessRes.stderr?.slice(0, 80) || 'warn'}`,
+              level: htaccessRes.code === 0 ? 'info' : 'warn',
+            });
+
+            // ── STEP 3: Corregir ownership del .htaccess para que WP pueda escribirlo en el futuro
+            await run(ssh, client,
+              `chown ${sysUser}:psacln "${docroot}/.htaccess" 2>/dev/null || chown ${sysUser}:${sysUser} "${docroot}/.htaccess" 2>/dev/null || true`,
+              { allowFail: true }
+            );
+            await run(ssh, client, `chmod 644 "${docroot}/.htaccess"`, { allowFail: true });
+            emit('cms:progress', { type: 'domain-step', domain, msg: `ownership .htaccess → ${sysUser}:psacln 644`, level: 'info' });
+
+
+            emit('cms:progress', { type: 'domain-done', domain, success: true, duration: Date.now() - t0 });
+
+          } catch (err) {
+            emit('cms:progress', { type: 'domain-error', domain, msg: err.message, level: 'error', duration: Date.now() - t0 });
+          } finally {
+            if (client) { try { await ssh.disconnect(client); } catch (_) {} }
+            sem.release();
+          }
+        }));
+
+        emit('cms:progress', {
+          type: 'batch-done',
+          msg: `Flush de permalinks completado — ${domains.length} dominios procesados.`,
+        });
+
+      } catch (err) {
+        emit('cms:progress', { type: 'batch-done', msg: `Error: ${err.message}`, level: 'error' });
+      } finally {
+        _processRunning  = false;
+        _abortController = null;
+      }
+    })();
+
+    return { success: true, message: `Flush iniciado para ${domains.length} dominios.` };
   });
 
   // ── ABORT ─────────────────────────────────────────────────────────────────

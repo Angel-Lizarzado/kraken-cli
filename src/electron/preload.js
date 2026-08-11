@@ -179,6 +179,7 @@ const INVOKE_CHANNELS = [
   'cms:audit-server',
   'cms:start-batch',
   'cms:abort',
+  'cms:flush-permalinks',
   'reconstructor:obtener-versiones',
   // ── Rescue Sorter ──
   'rescuesorter:process',
