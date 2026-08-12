@@ -712,33 +712,20 @@ class ExtractionService {
       if (sqlSize === 0) throw new Error(`[DB] SQL descargado vacío para ${domain}`);
       const uploadsSize = await this.getFileSize(localUploadsTar);
 
-      // ── PASO 6: Descomprimir uploads + empaquetar todo en {dominio}.tar.gz ──
+      // ── PASO 6: Empaquetar uploads.tar.gz + sql + config en {dominio}.tar.gz ──
+      // IMPORTANTE: NO descomprimimos uploads.tar.gz — lo incluimos tal cual en el paquete final.
+      // Descomprimir 1GB+ para recomprimir es O(n) innecesario y causa hangs de horas.
       this.emitLog(taskId, domain, 90, `[PACK] Armando paquete Ultra-Lite...`);
 
       // Crear carpeta destino definitiva
       const finalDomainPath = await this.workspaceManager.createDomainFolder(accountName, cloudName, safeDomain);
 
-      // Descomprimir uploads.tar.gz → uploads/ dentro de localTempDomainPath
-      try {
-        await tar.x({ file: localUploadsTar, cwd: localTempDomainPath, strict: false });
-        
-        // Verificar que la descompresión realmente generó la carpeta
-        if (!fsSync.existsSync(path.join(localTempDomainPath, 'uploads'))) {
-          throw new Error('El archivo tar no contenía la estructura uploads/ esperada.');
-        }
-      } catch (e) {
-        const errMsg = `Fallo crítico: No se pudo descomprimir uploads.tar.gz (posible bloqueo de seguridad o archivo corrupto). Error: ${e.message}`;
-        this.emitLog(taskId, domain, 91, `[ERROR] ${errMsg}`);
-        throw new Error(errMsg);
-      }
-      // Eliminar el uploads.tar.gz intermediario
-      try { await fsp.unlink(localUploadsTar); } catch (_) {}
+      const finalTarPath = path.join(finalDomainPath, `${safeDomain}.tar.gz`);
 
-      // Colectar items del temp (uploads/ + config.json + {dominio}.sql)
+      // Colectar items del temp: uploads.tar.gz (sin extraer) + config.json + {dominio}.sql
       const tempContents = await fsp.readdir(localTempDomainPath);
       const itemsToInclude = tempContents.filter(f => f !== 'logs');
 
-      const finalTarPath = path.join(finalDomainPath, `${safeDomain}.tar.gz`);
       await tar.c(
         { gzip: true, file: finalTarPath, cwd: localTempDomainPath, strict: false },
         itemsToInclude
