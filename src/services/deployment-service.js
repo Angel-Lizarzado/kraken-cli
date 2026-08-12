@@ -1479,6 +1479,7 @@ class DeploymentService {
       `mysql -u"${dbUser}" -p"$DB_PASS" "${dbName}" -e "UPDATE \\\`\${PREFIX}options\\\` SET option_value='https://${safeDom}' WHERE option_name IN ('siteurl','home');" 2>/dev/null || true`,
       `$WP_CMD option delete upload_path --allow-root --path="${HDP}" 2>/dev/null || true`,
       `$WP_CMD option set upload_path "" --allow-root --path="${HDP}" 2>/dev/null || true`,
+      `$WP_CMD option update permalink_structure '/%postname%/' --allow-root --path="${HDP}" 2>/dev/null || true`,
       `$WP_CMD rewrite flush --hard --allow-root --path="${HDP}" 2>/dev/null || true`,
       `$WP_CMD elementor flush_css --allow-root --path="${HDP}" 2>/dev/null || true`,
       '',
