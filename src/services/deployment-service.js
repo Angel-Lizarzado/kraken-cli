@@ -1354,6 +1354,37 @@ class DeploymentService {
     await this.sshService.uploadFileFast(sshClient, localTarPath, remoteArchive);
     log(`[SFTP] Upload completado.`);
 
+    // Verificar tamaño remoto vs local antes de ejecutar el script
+    const localTarSize = require('fs').statSync(localTarPath).size;
+    const verifyTar = await this.sshService.executeCommand(
+      sshClient,
+      `stat -c%s "${remoteArchive}" 2>/dev/null || echo 0`,
+      { timeout: 10000 }
+    );
+    const remoteTarSize = parseInt((verifyTar.stdout || '0').trim(), 10);
+    if (remoteTarSize !== localTarSize) {
+      throw new Error(
+        `[SFTP] Subida incompleta: local=${localTarSize} bytes, remoto=${remoteTarSize} bytes. ` +
+        `Reintentá el despliegue (archivo truncado en tránsito).`
+      );
+    }
+
+    // Verificar integridad del gzip remoto
+    const gzipCheck = await this.sshService.executeCommand(
+      sshClient,
+      `gzip -t "${remoteArchive}" 2>&1 && echo "GZIP_OK" || echo "GZIP_FAIL"`,
+      { timeout: 30000 }
+    );
+    if (!(gzipCheck.stdout || '').includes('GZIP_OK')) {
+      // Limpiar archivo corrupto
+      await this.sshService.executeCommand(sshClient, `rm -f "${remoteArchive}" 2>/dev/null`, { timeout: 5000 });
+      throw new Error(
+        `[SFTP] El archivo .tar.gz está corrupto en el servidor (gzip -t falló). ` +
+        `Reintentá el despliegue.`
+      );
+    }
+    log(`[SFTP] Archivo verificado: ${(localTarSize / 1024 / 1024).toFixed(2)} MB OK`);
+
     this.progressEmitter.emitProgress({ taskId, module: 'deployment', domain, progress: 20, message: '[ULTRA-LITE] Archivo subido. Iniciando script...' });
 
     // 3. Generar credenciales de DB deterministas
